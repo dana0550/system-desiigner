@@ -104,19 +104,22 @@ function toNodeRef(input: string, nodes: Map<string, ArchitectureNode>): string 
     return input
   }
 
-  const serviceRef = `service:${input}`
-  if (nodes.has(serviceRef)) {
-    return serviceRef
-  }
+  const prefixes: Array<ServiceNode['type']> = [
+    'service',
+    'repo',
+    'external',
+    'datastore',
+    'queue',
+    'team',
+    'api',
+    'event',
+  ]
 
-  const repoRef = `repo:${input}`
-  if (nodes.has(repoRef)) {
-    return repoRef
-  }
-
-  const externalRef = `external:${input}`
-  if (nodes.has(externalRef)) {
-    return externalRef
+  for (const prefix of prefixes) {
+    const ref = `${prefix}:${input}`
+    if (nodes.has(ref)) {
+      return ref
+    }
   }
 
   return undefined
