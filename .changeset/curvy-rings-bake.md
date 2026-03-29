@@ -4,7 +4,8 @@
 
 Polish public documentation and release operations for v1:
 
-- Rewrite README for public consumption with end-to-end usage flows, command reference, artifact layout, and environment setup.
+- Add a simpler bootstrap path: `sdx bootstrap quick <org>` (or `<org>/<design-repo>`).
+- Rewrite README for public consumption with one-command onboarding, clearer daily flows, and Codex-oriented usage guidance.
 - Add a new hero header image at `assets/readme/hero.svg`.
 - Add MIT `LICENSE` file.
 - Adopt Changesets-based release automation on merges to `main`.

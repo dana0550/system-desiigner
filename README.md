@@ -2,10 +2,10 @@
   <img src="./assets/readme/hero.svg" alt="SDX hero" width="100%" />
 </p>
 
-<h1 align="center">sdx-cli</h1>
+<h1 align="center">SDX CLI</h1>
 
 <p align="center">
-  Docs-first system design intelligence for multi-repo organizations.
+  System design intelligence across many repositories, with one docs-first workspace.
 </p>
 
 <p align="center">
@@ -18,85 +18,74 @@
 </p>
 
 <p align="center">
-  <a href="#why-sdx">Why SDX</a> •
-  <a href="#quickstart-consumer-mode">Quickstart</a> •
-  <a href="#day-1-workflow">Day 1 Workflow</a> •
-  <a href="#command-reference">Commands</a> •
-  <a href="#release-model">Release Model</a>
+  <a href="#one-command-setup">One-Command Setup</a> •
+  <a href="#daily-workflow">Daily Workflow</a> •
+  <a href="#for-codex-agents">For Codex Agents</a> •
+  <a href="#release-process">Release Process</a>
 </p>
 
-## Why SDX
-`sdx` is a cross-repo CLI that turns scattered service knowledge into a maintained architecture workspace.
+## What SDX is
+SDX gives your team a single architecture workspace that sits above service repos.
 
-It is built for platform teams that need one system-level source of truth while each service stays in its own code repo.
+You use it to:
+- map services across repos,
+- track contracts,
+- review new service plans,
+- draft cross-team integration handoffs,
+- generate Codex-ready context packs.
 
-What you get in v1:
-- Named service maps with deterministic scope control (`include`, `exclude`, prompt preview/apply).
-- Architecture artifacts per map (`service-map.json`, `service-map.md`, `service-map.mmd`, scope logs).
-- Contract discovery for OpenAPI, GraphQL, Proto, and AsyncAPI surfaces.
-- Plan review artifacts with required NFR checks (latency, availability, durability, SLO, failure handling).
-- New-service proposal drafts and per-repo handoff drafts.
-- Codex context packs + run transcripts stored for traceability.
-- Repo-local state (`.sdx`) and versioned generated outputs.
+It is advisory by design in v1. It does not auto-open PRs or mutate infra.
 
-## Product Model
-- `sdx-cli` repo (this repo): source code, tests, release pipeline.
-- Consumer workspace: initialized via `npx sdx-cli@<version> bootstrap consumer ...`.
-- Recommended topology: one dedicated design repo per org/team.
-
-```mermaid
-flowchart LR
-  A["Service Repos"] --> B["SDX Consumer Workspace"]
-  B --> C["Maps + Contracts + Docs"]
-  B --> D["Plan Reviews + Handoffs"]
-  B --> E["Codex Context Packs + Runs"]
-```
-
-## Quickstart (Consumer Mode)
-Initialize a dedicated system-design workspace in any org/team using a pinned CLI version:
+## One-Command Setup
+If you only remember one command, use this:
 
 ```bash
-npx --yes sdx-cli@<version> bootstrap consumer \
-  --org <github-org> \
-  --design-repo <system-design-repo>
+npx --yes sdx-cli@latest bootstrap quick <org>
 ```
 
-This creates:
+Examples:
+
+```bash
+# default design repo name: system-design
+npx --yes sdx-cli@latest bootstrap quick dana0550
+
+# explicit design repo name
+npx --yes sdx-cli@latest bootstrap quick dana0550/system-design
+```
+
+This creates a dedicated workspace and a pinned wrapper script:
 - `.sdx/config.json`
 - `.sdx/install.json`
-- `scripts/sdx` (always pinned to the installed version)
+- `scripts/sdx`
 
-Use the wrapper for all commands:
+Then run:
 
 ```bash
+cd ./system-design
 ./scripts/sdx status
 ```
 
-### Bootstrap Options
+### Quick bootstrap flags
 ```bash
-npx --yes sdx-cli@<version> bootstrap consumer \
-  --org <github-org> \
-  --design-repo <system-design-repo> \
-  --mode dedicated \
-  --target-dir ./system-design \
-  --pin <version> \
-  --seed-default-map \
+npx --yes sdx-cli@latest bootstrap quick dana0550/system-design \
+  --seed \
   --create-remote
 ```
 
-Flag notes:
-- `--mode dedicated|in-place` (default: `dedicated`)
-- `--create-remote` only works in `dedicated` mode
-- `--seed-default-map` requires GitHub auth token (`GITHUB_TOKEN`)
+- `--seed`: auto-runs repo sync + default map seed (`all-services`) when `GITHUB_TOKEN` is present.
+- `--create-remote`: creates the design repo remotely (dedicated mode).
+- `--in-place`: initialize current directory instead of `./<design-repo>`.
+- `--dir <path>`: override target directory.
+- `--pin <version>`: pin wrapper to a specific CLI version.
 
-## Day 1 Workflow
-After bootstrap, run from the consumer workspace root:
+## Daily Workflow
+From your SDX workspace root:
 
 ```bash
-./scripts/sdx repo sync --org <github-org>
-./scripts/sdx repo add --name <repo-name> --path </absolute/local/clone/path>
+./scripts/sdx repo sync --org <org>
+./scripts/sdx repo add --name <repo-name> --path </abs/path/to/local/clone>
 
-./scripts/sdx map create platform-core --org <github-org>
+./scripts/sdx map create platform-core --org <org>
 ./scripts/sdx map include platform-core repo-a repo-b
 ./scripts/sdx map exclude platform-core legacy-repo
 ./scripts/sdx map build platform-core
@@ -105,50 +94,70 @@ After bootstrap, run from the consumer workspace root:
 ./scripts/sdx docs generate --map platform-core
 ```
 
-Prompt mode (preview first, explicit apply second):
+For planning and rollout:
+
+```bash
+./scripts/sdx plan review --map platform-core --plan ./plans/new-service.md
+./scripts/sdx service propose --map platform-core --brief ./plans/new-service-brief.md
+./scripts/sdx handoff draft --map platform-core --service payments-orchestrator
+```
+
+For Codex:
+
+```bash
+./scripts/sdx codex run implementation-plan --map platform-core --input ./plans/new-service.md
+```
+
+## Prompt-Driven Scope Edits
+Preview first, apply second:
 
 ```bash
 ./scripts/sdx prompt "exclude legacy-repo from map" --map platform-core
 ./scripts/sdx prompt "exclude legacy-repo from map" --map platform-core --apply
 ```
 
-## Planning + Handoffs + Codex
-Plan review against existing map context:
+## For Codex Agents
+Use this minimal runbook when an agent needs architecture context quickly:
 
+1. `./scripts/sdx status`
+2. `./scripts/sdx map status <map-id>`
+3. `./scripts/sdx map build <map-id>`
+4. `./scripts/sdx contracts extract --map <map-id>`
+5. `./scripts/sdx codex run <task-type> --map <map-id> --input <file>`
+
+Where outputs land:
+- `maps/<map-id>/service-map.json|md|mmd`
+- `maps/<map-id>/contracts.json|md`
+- `codex/context-packs/*.json`
+- `codex/runs/*.md|json`
+
+## Command Surface
 ```bash
-./scripts/sdx plan review --map platform-core --plan ./plans/new-service.md
+sdx init
+sdx bootstrap org
+sdx bootstrap consumer
+sdx bootstrap quick
+
+sdx repo sync
+sdx repo add
+
+sdx map create|include|exclude|remove-override|status|build
+sdx prompt
+
+sdx contracts extract
+sdx docs generate
+sdx plan review
+sdx service propose
+sdx handoff draft
+sdx publish wiki
+sdx codex run
+
+sdx status
+sdx version
+sdx migrate artifacts
 ```
 
-Generate new-service architecture options:
-
-```bash
-./scripts/sdx service propose --map platform-core --brief ./plans/new-service-brief.md
-```
-
-Draft per-repo handoff integration messages:
-
-```bash
-./scripts/sdx handoff draft --map platform-core --service payments-orchestrator
-```
-
-Run Codex with generated context packs:
-
-```bash
-./scripts/sdx codex run implementation-plan --map platform-core --input ./plans/new-service.md
-```
-
-## Command Reference
-| Area | Commands |
-|---|---|
-| Bootstrap | `sdx init`, `sdx bootstrap org`, `sdx bootstrap consumer` |
-| Repo inventory | `sdx repo sync`, `sdx repo add` |
-| Map lifecycle | `sdx map create`, `sdx map include`, `sdx map exclude`, `sdx map remove-override`, `sdx map status`, `sdx map build` |
-| Natural-language control | `sdx prompt` |
-| Intelligence outputs | `sdx contracts extract`, `sdx docs generate`, `sdx plan review`, `sdx service propose`, `sdx handoff draft`, `sdx publish wiki` |
-| Codex | `sdx codex run` |
-| Platform | `sdx status`, `sdx version`, `sdx migrate artifacts` |
-
-For full flags/help:
+Full help:
 
 ```bash
 sdx --help
@@ -156,51 +165,30 @@ sdx <topic> --help
 sdx <topic> <command> --help
 ```
 
-## Generated Artifact Layout
-```text
-.sdx/
-  config.json
-  install.json
-  state.db
-maps/<map-id>/
-  scope.json
-  scope-change-log.md
-  service-map.json
-  service-map.md
-  service-map.mmd
-  contracts.json
-  contracts.md
-docs/architecture/
-  <map-id>.md
-catalog/dependencies/
-  <map-id>.md
-plans/reviews/
-  <timestamp>-<map-id>.json
-  <timestamp>-<map-id>.md
-plans/
-  <timestamp>-<map-id>-service-proposal.json
-  <timestamp>-<map-id>-service-proposal.md
-handoffs/
-  <timestamp>-<map-id>-<service>.json
-  <timestamp>-<map-id>-<service>.md
-codex/context-packs/
-codex/runs/
+## Release Process
+This repo uses Changesets and releases from `main`.
+
+- Add a changeset for user-facing changes:
+  - `npm run changeset`
+- Merges to `main` trigger the release workflow.
+- Workflow behavior:
+  - opens/updates a Release PR when there are pending changesets,
+  - publishes to npm when release commits are present.
+
+Maintainer commands:
+
+```bash
+npm run version-packages
+npm run release
 ```
 
 ## Environment
-Required for org sync and optional remote repo creation:
-
 ```bash
 export GITHUB_TOKEN=<token>
+export CODEX_CMD=<optional-codex-binary-name>
 ```
 
-Optional Codex command override:
-
-```bash
-export CODEX_CMD=<codex-binary-name>
-```
-
-## Local Development (CLI Source Repo)
+## Local Development
 ```bash
 npm ci
 npm run typecheck
@@ -208,27 +196,6 @@ npm test
 npm run build
 node ./bin/run.js --help
 ```
-
-## Release Model
-This repo uses **Changesets** with automation on `main`:
-- Every user-facing change should include a changeset.
-- Merges to `main` trigger release automation.
-- The workflow either:
-  - opens/updates a Release PR with version/changelog changes, or
-  - publishes to npm when release commits are present on `main`.
-
-Maintainer commands:
-
-```bash
-npm run changeset
-npm run version-packages
-npm run release
-```
-
-## Non-goals (v1)
-- No autonomous cross-repo pull request creation.
-- No automated infrastructure mutation or deployments.
-- Recommendations are advisory; ownership decisions stay with service teams.
 
 ## License
 MIT
