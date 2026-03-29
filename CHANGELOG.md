@@ -1,5 +1,17 @@
 # sdx-cli
 
+## 0.3.0
+
+### Minor Changes
+
+- f72a0b4: Add architecture pack generation for initialized consumer workspaces.
+
+  - New commands: `sdx architecture generate` and `sdx architecture validate`.
+  - New canonical architecture model artifact with provenance/confidence metadata.
+  - New per-map overrides file: `maps/<map-id>/architecture-overrides.json` for asserted/suppressed edges and service metadata.
+  - Generate org-level system diagrams and per-service deep-dive architecture docs/contract diagrams.
+  - Extend wiki export to include generated architecture pack docs.
+
 ## 0.2.2
 
 ### Patch Changes
