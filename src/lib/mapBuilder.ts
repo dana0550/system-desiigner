@@ -104,6 +104,8 @@ export function buildServiceMapArtifact(
       metadata: {
         source: repo?.source ?? 'github',
         localPath: repo?.localPath,
+        htmlUrl: repo?.htmlUrl,
+        defaultBranch: repo?.defaultBranch,
       },
     })
 

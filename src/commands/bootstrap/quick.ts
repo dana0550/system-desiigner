@@ -75,6 +75,7 @@ export default class BootstrapQuickCommand extends Command {
       this.log('- ./scripts/sdx map create all-services --org <org>')
       this.log('- ./scripts/sdx map build all-services')
     }
+    this.log('- ./scripts/sdx architecture generate --map all-services')
 
     if (result.warnings.length > 0) {
       this.log('')

@@ -62,7 +62,7 @@ export interface ScopeManifest {
 
 export interface ServiceNode {
   id: string
-  type: 'service' | 'repo' | 'api' | 'event' | 'datastore' | 'queue' | 'team'
+  type: 'service' | 'repo' | 'api' | 'event' | 'datastore' | 'queue' | 'team' | 'external'
   label: string
   repo?: string
   metadata?: Record<string, unknown>
@@ -143,6 +143,84 @@ export interface CodexContextPack {
     edges: ServiceEdge[]
   }
   inputFile?: string
+}
+
+export interface ArchitectureProvenance {
+  source: 'inferred' | 'declared' | 'override'
+  confidence: number
+  evidence: string[]
+}
+
+export interface ArchitectureNode extends ServiceNode {
+  provenance: ArchitectureProvenance
+}
+
+export interface ArchitectureEdge extends ServiceEdge {
+  provenance: ArchitectureProvenance
+}
+
+export interface ArchitectureServiceMetadata {
+  owner?: string
+  criticality?: 'low' | 'medium' | 'high' | 'critical'
+  businessContext?: string
+}
+
+export interface ArchitectureAssertedNode {
+  id: string
+  type: ServiceNode['type']
+  label: string
+  metadata?: Record<string, unknown>
+}
+
+export interface ArchitectureAssertedEdge {
+  from: string
+  to: string
+  relation: ServiceEdge['relation']
+  metadata?: Record<string, unknown>
+}
+
+export interface ArchitectureSuppressedEdge {
+  from: string
+  to: string
+  relation: ServiceEdge['relation']
+}
+
+export interface ArchitectureOverrides {
+  schemaVersion: string
+  generatedAt: string
+  mapId: string
+  serviceMetadata: Record<string, ArchitectureServiceMetadata>
+  assertedNodes: ArchitectureAssertedNode[]
+  assertedEdges: ArchitectureAssertedEdge[]
+  suppressedEdges: ArchitectureSuppressedEdge[]
+}
+
+export interface ArchitectureModelArtifact {
+  schemaVersion: string
+  generatedAt: string
+  mapId: string
+  org: string
+  overridesPath: string
+  coverageConfidence: number
+  errors: string[]
+  warnings: string[]
+  nodes: ArchitectureNode[]
+  edges: ArchitectureEdge[]
+}
+
+export interface ArchitectureValidationResult {
+  schemaVersion: string
+  generatedAt: string
+  mapId: string
+  valid: boolean
+  errors: string[]
+  warnings: string[]
+  stats: {
+    serviceCount: number
+    edgeCount: number
+    inferredEdges: number
+    overrideEdges: number
+  }
 }
 
 export type PublishTargetStatus = 'created' | 'updated' | 'skipped' | 'failed'

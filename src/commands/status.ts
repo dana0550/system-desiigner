@@ -30,7 +30,10 @@ export default class StatusCommand extends Command {
       const mapDir = path.join(mapsDir, mapId)
       const hasScope = fileExists(path.join(mapDir, 'scope.json'))
       const hasServiceMap = fileExists(path.join(mapDir, 'service-map.json'))
-      this.log(`- ${mapId}: scope=${hasScope ? 'yes' : 'no'}, service-map=${hasServiceMap ? 'yes' : 'no'}`)
+      const hasArchitectureModel = fileExists(path.join(mapDir, 'architecture', 'model.json'))
+      this.log(
+        `- ${mapId}: scope=${hasScope ? 'yes' : 'no'}, service-map=${hasServiceMap ? 'yes' : 'no'}, architecture=${hasArchitectureModel ? 'yes' : 'no'}`,
+      )
     }
 
     context.db.close()

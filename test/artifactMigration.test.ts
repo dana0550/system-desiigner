@@ -8,6 +8,9 @@ describe('artifactMigration', () => {
   it('matches managed artifact paths', () => {
     expect(isManagedArtifactPath(cwd, path.join(cwd, 'maps/core/service-map.json'))).toBe(true)
     expect(isManagedArtifactPath(cwd, path.join(cwd, 'maps/core/scope.json'))).toBe(true)
+    expect(isManagedArtifactPath(cwd, path.join(cwd, 'maps/core/architecture-overrides.json'))).toBe(true)
+    expect(isManagedArtifactPath(cwd, path.join(cwd, 'maps/core/architecture/model.json'))).toBe(true)
+    expect(isManagedArtifactPath(cwd, path.join(cwd, 'maps/core/architecture/validation.json'))).toBe(true)
     expect(isManagedArtifactPath(cwd, path.join(cwd, 'plans/reviews/review.json'))).toBe(true)
     expect(isManagedArtifactPath(cwd, path.join(cwd, 'codex/runs/run.json'))).toBe(true)
   })

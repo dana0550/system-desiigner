@@ -2,6 +2,8 @@ import path from 'node:path'
 
 const MANAGED_ARTIFACT_PATTERNS = [
   /^maps\/[^/]+\/(scope|service-map|contracts)\.json$/,
+  /^maps\/[^/]+\/architecture\/(model|validation)\.json$/,
+  /^maps\/[^/]+\/architecture-overrides\.json$/,
   /^plans\/reviews\/.*\.json$/,
   /^plans\/.*-service-proposal\.json$/,
   /^handoffs\/.*\.json$/,
