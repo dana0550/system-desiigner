@@ -30,8 +30,8 @@ afterEach(() => {
 describe('bootstrapConsumer helpers', () => {
   it('resolves dedicated target dir to ./<design-repo> by default', () => {
     const cwd = '/workspace/root'
-    expect(resolveConsumerTargetDir('dedicated', 'system-design', undefined, cwd)).toBe(
-      path.resolve(cwd, 'system-design'),
+    expect(resolveConsumerTargetDir('dedicated', 'acme-system-designer', undefined, cwd)).toBe(
+      path.resolve(cwd, 'acme-system-designer'),
     )
   })
 
@@ -64,13 +64,13 @@ describe('bootstrapConsumer integration', () => {
     const root = mkTempDir()
     const result = await bootstrapConsumer({
       org: 'acme',
-      designRepo: 'system-design',
+      designRepo: 'acme-system-designer',
       mode: 'dedicated',
       pin: '0.1.0',
       cwd: root,
     })
 
-    const targetDir = path.join(root, 'system-design')
+    const targetDir = path.join(root, 'acme-system-designer')
     expect(result.targetDir).toBe(targetDir)
     expect(fs.existsSync(path.join(targetDir, '.sdx', 'config.json'))).toBe(true)
     expect(fs.existsSync(path.join(targetDir, '.sdx', 'install.json'))).toBe(true)

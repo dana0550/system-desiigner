@@ -3,7 +3,7 @@ export interface BootstrapQuickTarget {
   designRepo: string
 }
 
-const DEFAULT_DESIGN_REPO = 'system-design'
+const DEFAULT_DESIGN_REPO_SUFFIX = 'system-designer'
 const ORG_REPO_PATTERN = /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/
 const ORG_PATTERN = /^[a-zA-Z0-9._-]+$/
 
@@ -15,6 +15,10 @@ function normalizeTarget(target: string): string {
   return normalized
 }
 
+function defaultDesignRepoForOrg(org: string): string {
+  return `${org}-${DEFAULT_DESIGN_REPO_SUFFIX}`
+}
+
 export function parseBootstrapQuickTarget(target: string): BootstrapQuickTarget {
   const normalized = normalizeTarget(target)
 
@@ -24,10 +28,10 @@ export function parseBootstrapQuickTarget(target: string): BootstrapQuickTarget 
   }
 
   if (ORG_PATTERN.test(normalized)) {
-    return {org: normalized, designRepo: DEFAULT_DESIGN_REPO}
+    return {org: normalized, designRepo: defaultDesignRepoForOrg(normalized)}
   }
 
   throw new Error(
-    "Invalid target. Use <org> or <org>/<design-repo> (example: dana0550/system-design).",
+    "Invalid target. Use <org> or <org>/<design-repo> (example: dana0550/dana0550-system-designer).",
   )
 }

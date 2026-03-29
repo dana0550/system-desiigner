@@ -37,22 +37,27 @@ You use it to:
 v1 remains manual-triggered. SDX can open draft notice PRs when you run publish commands, but it does not autonomously mutate runtime infrastructure.
 
 ## One-Command Setup
-If you only remember one command, use this:
+### Org Initialization
+Run this to initialize SDX for a GitHub org:
 
 ```bash
 npx --yes sdx-cli@latest bootstrap quick <org>
 ```
+
+Default naming rule:
+- org-only input uses `<org>-system-designer` as the design repo/workspace name.
+- explicit `<org>/<design-repo>` remains fully supported as an override.
 
 This requires `sdx-cli` to be available on npm.
 
 Examples:
 
 ```bash
-# default design repo name: system-design
+# default design repo name: <org>-system-designer
 npx --yes sdx-cli@latest bootstrap quick dana0550
 
-# explicit design repo name
-npx --yes sdx-cli@latest bootstrap quick dana0550/system-design
+# explicit design repo name override
+npx --yes sdx-cli@latest bootstrap quick dana0550/platform-architecture
 ```
 
 If npm publishing is not enabled yet in your org, use source mode:
@@ -72,15 +77,15 @@ This creates a dedicated workspace and a pinned wrapper script:
 Then run:
 
 ```bash
-cd ./system-design
+cd ./<org>-system-designer
 ./scripts/sdx status
 ```
 
 ### Quick bootstrap flags
 ```bash
-npx --yes sdx-cli@latest bootstrap quick dana0550/system-design \
+npx --yes sdx-cli@latest bootstrap quick dana0550 \
   --seed \
-  --create-remote
+  --createRemote
 ```
 
 - `--seed`: auto-runs repo sync + default map seed (`all-services`) when `GITHUB_TOKEN` is present.
