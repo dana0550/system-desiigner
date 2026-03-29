@@ -215,8 +215,13 @@ This repo uses Changesets and releases from `main`.
   - `npm run changeset`
 - Merges to `main` trigger the release workflow.
 - Workflow behavior:
-  - opens/updates a Release PR when there are pending changesets,
-  - publishes to npm when release commits are present.
+  - versions packages from pending changesets,
+  - commits and pushes the release version/changelog to `main`,
+  - publishes to npm,
+  - creates a GitHub Release tag (`vX.Y.Z`).
+- Publish prerequisites:
+  - configure npm auth for CI (`NPM_TOKEN` repo secret or npm trusted publishing),
+  - allow workflow pushes to `main` under your branch protection policy.
 
 Maintainer commands:
 
