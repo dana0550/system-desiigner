@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      publish_existing:
+        description: Publish current package version if it is not on npm (recovery mode)
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -31,16 +37,39 @@ jobs:
       - run: npm run build
       - name: Version packages from changesets
         id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_PUBLISH_EXISTING: ${{ github.event.inputs.publish_existing || 'true' }}
         run: |
           npm run version-packages
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
           VERSION="$(node -p "require('./package.json').version")"
+          CHANGED="false"
+          SHOULD_PUBLISH="false"
+
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           if git diff --quiet --exit-code; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "No unreleased changesets found."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
+            CHANGED="true"
           fi
+
+          if npm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "npm_published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "npm_published=false" >> "$GITHUB_OUTPUT"
+            if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ "${DISPATCH_PUBLISH_EXISTING}" = "true" ]; then
+              SHOULD_PUBLISH="true"
+            fi
+          fi
+
+          if [ "${CHANGED}" = "true" ]; then
+            SHOULD_PUBLISH="true"
+          fi
+
+          echo "should_publish=${SHOULD_PUBLISH}" >> "$GITHUB_OUTPUT"
       - name: Commit release version changes
         if: steps.version.outputs.changed == 'true'
         run: |
@@ -49,13 +78,22 @@ jobs:
           git add -A
           git commit -m "chore: release v${{ steps.version.outputs.version }} [skip ci]"
           git push origin HEAD:main
+      - name: Validate npm auth
+        if: steps.version.outputs.should_publish == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN}" ]; then
+            echo "::error::NPM_TOKEN is not configured. Add repository secret NPM_TOKEN to publish to npm."
+            exit 1
+          fi
       - name: Publish npm package
-        if: steps.version.outputs.changed == 'true'
+        if: steps.version.outputs.should_publish == 'true'
         run: npm run release
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Create GitHub release
-        if: steps.version.outputs.changed == 'true'
+        if: steps.version.outputs.should_publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
@@ -68,8 +106,8 @@ jobs:
           gh release create "${TAG}" --target main --title "sdx-cli ${TAG}" --generate-notes
       - name: Release summary
         run: |
-          if [ "${{ steps.version.outputs.changed }}" = "true" ]; then
+          if [ "${{ steps.version.outputs.should_publish }}" = "true" ]; then
             echo "Released sdx-cli@${{ steps.version.outputs.version }}"
           else
-            echo "No release changeset found on this merge."
+            echo "No publish needed (no pending changesets and current version already exists on npm)."
           fi

@@ -234,6 +234,8 @@ This repo uses Changesets and releases from `main`.
   - commits and pushes the release version/changelog to `main`,
   - publishes to npm,
   - creates a GitHub Release tag (`vX.Y.Z`).
+- Manual recovery mode:
+  - run the `release` workflow via `workflow_dispatch` with `publish_existing=true` to publish the current `package.json` version when prior npm publish failed.
 - Publish prerequisites:
   - configure npm auth for CI (`NPM_TOKEN` repo secret),
   - allow workflow pushes to `main` under your branch protection policy.
