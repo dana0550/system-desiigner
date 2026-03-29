@@ -11,8 +11,7 @@
 <p align="center">
   <a href="https://github.com/dana0550/system-desiigner/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/dana0550/system-desiigner/ci.yml?branch=main&label=CI" alt="CI"></a>
   <a href="https://github.com/dana0550/system-desiigner/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/dana0550/system-desiigner/release.yml?branch=main&label=Release" alt="Release"></a>
-  <a href="https://www.npmjs.com/package/sdx-cli"><img src="https://img.shields.io/npm/v/sdx-cli" alt="npm version"></a>
-  <a href="https://www.npmjs.com/package/sdx-cli"><img src="https://img.shields.io/npm/dm/sdx-cli" alt="npm downloads"></a>
+  <a href="https://github.com/dana0550/system-desiigner/releases"><img src="https://img.shields.io/github/v/release/dana0550/system-desiigner" alt="GitHub release"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D20-339933" alt="Node 20+">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-0E8A92" alt="MIT"></a>
 </p>
@@ -44,6 +43,8 @@ If you only remember one command, use this:
 npx --yes sdx-cli@latest bootstrap quick <org>
 ```
 
+This requires `sdx-cli` to be available on npm.
+
 Examples:
 
 ```bash
@@ -52,6 +53,15 @@ npx --yes sdx-cli@latest bootstrap quick dana0550
 
 # explicit design repo name
 npx --yes sdx-cli@latest bootstrap quick dana0550/system-design
+```
+
+If npm publishing is not enabled yet in your org, use source mode:
+
+```bash
+git clone https://github.com/dana0550/system-desiigner.git
+cd system-desiigner
+npm ci && npm run build
+node ./bin/run.js bootstrap quick <org>
 ```
 
 This creates a dedicated workspace and a pinned wrapper script:
@@ -74,8 +84,8 @@ npx --yes sdx-cli@latest bootstrap quick dana0550/system-design \
 ```
 
 - `--seed`: auto-runs repo sync + default map seed (`all-services`) when `GITHUB_TOKEN` is present.
-- `--create-remote`: creates the design repo remotely (dedicated mode).
-- `--in-place`: initialize current directory instead of `./<design-repo>`.
+- `--createRemote` (alias: `--create-remote`): creates the design repo remotely (dedicated mode).
+- `--inPlace` (alias: `--in-place`): initialize current directory instead of `./<design-repo>`.
 - `--dir <path>`: override target directory.
 - `--pin <version>`: pin wrapper to a specific CLI version.
 
@@ -220,7 +230,7 @@ This repo uses Changesets and releases from `main`.
   - publishes to npm,
   - creates a GitHub Release tag (`vX.Y.Z`).
 - Publish prerequisites:
-  - configure npm auth for CI (`NPM_TOKEN` repo secret or npm trusted publishing),
+  - configure npm auth for CI (`NPM_TOKEN` repo secret),
   - allow workflow pushes to `main` under your branch protection policy.
 
 Maintainer commands:
