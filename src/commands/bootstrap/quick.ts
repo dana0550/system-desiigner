@@ -7,7 +7,7 @@ export default class BootstrapQuickCommand extends Command {
 
   static override examples = [
     '<%= config.bin %> <%= command.id %> dana0550',
-    '<%= config.bin %> <%= command.id %> dana0550/system-design --seed',
+    '<%= config.bin %> <%= command.id %> dana0550/dana0550-system-designer --seed',
   ]
 
   static override args = {
@@ -59,6 +59,7 @@ export default class BootstrapQuickCommand extends Command {
     })
 
     this.log('Bootstrap complete.')
+    this.log(`Design repo: ${target.designRepo}`)
     this.log(`Workspace: ${result.targetDir}`)
     this.log(`Pinned version: ${result.pinnedVersion}`)
     this.log(`Wrapper: ${result.targetDir}/scripts/sdx`)
