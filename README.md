@@ -19,6 +19,7 @@
 <p align="center">
   <a href="#install-from-npm">Install from npm</a> •
   <a href="#one-command-setup">One-Command Setup</a> •
+  <a href="#architecture-pack-org--service-deep-dives">Architecture Pack</a> •
   <a href="#daily-workflow">Daily Workflow</a> •
   <a href="#for-codex-agents">For Codex Agents</a> •
   <a href="#release-process">Release Process</a>
@@ -131,6 +132,7 @@ From your SDX workspace root:
 
 ./scripts/sdx contracts extract --map platform-core
 ./scripts/sdx docs generate --map platform-core
+./scripts/sdx architecture generate --map platform-core
 ```
 
 For planning and rollout:
@@ -146,6 +148,32 @@ For Codex:
 ```bash
 ./scripts/sdx codex run implementation-plan --map platform-core --input ./plans/new-service.md
 ```
+
+### Architecture Pack (Org + Service Deep Dives)
+Generate an executive-ready architecture pack from your initialized consumer workspace:
+
+```bash
+# full pack (org-level + per-service docs/diagrams)
+./scripts/sdx architecture generate --map platform-core
+
+# org-level only
+./scripts/sdx architecture generate --map platform-core --depth org
+
+# targeted service rebuild
+./scripts/sdx architecture generate --map platform-core --service payments-api
+
+# explicit validation pass (override integrity + completeness checks)
+./scripts/sdx architecture validate --map platform-core
+```
+
+Override source of truth:
+- `maps/<map-id>/architecture-overrides.json`
+
+Use overrides to:
+- declare hidden or external dependencies,
+- assert missing relationships,
+- suppress incorrect inferred edges,
+- attach service owner/criticality/business context metadata.
 
 ## Cross-Repo Tech-Lead PRs (Spec-System Native)
 Use this flow when SDX should create real `CC-*` contract-change PRs in downstream repos that have spec-system initialized.
@@ -204,11 +232,16 @@ Use this minimal runbook when an agent needs architecture context quickly:
 2. `./scripts/sdx map status <map-id>`
 3. `./scripts/sdx map build <map-id>`
 4. `./scripts/sdx contracts extract --map <map-id>`
-5. `./scripts/sdx codex run <task-type> --map <map-id> --input <file>`
+5. `./scripts/sdx architecture generate --map <map-id>`
+6. `./scripts/sdx codex run <task-type> --map <map-id> --input <file>`
 
 Where outputs land:
 - `maps/<map-id>/service-map.json|md|mmd`
 - `maps/<map-id>/contracts.json|md`
+- `maps/<map-id>/architecture/model.json|validation.json`
+- `maps/<map-id>/architecture-overrides.json`
+- `docs/architecture/<map-id>/index.md`
+- `docs/architecture/<map-id>/services/*.md`
 - `codex/context-packs/*.json`
 - `codex/runs/*.md|json`
 
@@ -225,6 +258,7 @@ sdx repo add
 sdx map create|include|exclude|remove-override|status|build
 sdx prompt
 
+sdx architecture generate|validate
 sdx contracts extract
 sdx docs generate
 sdx plan review
