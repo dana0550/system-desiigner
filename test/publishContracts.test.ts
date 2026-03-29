@@ -420,6 +420,15 @@ describe('publish contracts workflows', () => {
     expect(result.contracts[0].contractChangeId).toBe('CC-001')
     expect(result.totals.created).toBe(1)
     expect(result.sourceSyncPrUrls).toHaveLength(1)
+    expect(githubOps.getFile('acme', 'spec-system', 'sdx/source-sync/cc-001', 'docs/CONTRACT_CHANGES.md')).toContain(
+      '| service_added |',
+    )
+    expect(
+      githubOps.getFile('acme', 'spec-system', 'sdx/source-sync/cc-001', 'docs/contracts/CC-001-payments-orchestrator.md'),
+    ).toContain('change_type: service_added')
+    expect(githubOps.getFile('acme', 'service-a', 'sdx/spec-notice/cc-001-service-a', 'docs/CONTRACT_CHANGES.md')).toContain(
+      '| service_added |',
+    )
 
     project.db.close()
   })

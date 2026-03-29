@@ -84,6 +84,8 @@ interface PublishTargetSuccess {
   targetContractChangeId: string
 }
 
+const SERVICE_NOTICE_CHANGE_TYPE = 'service_added'
+
 function nowIso(): string {
   return new Date().toISOString()
 }
@@ -468,7 +470,7 @@ function buildSourceDocFromServicePlan(context: PublishContext, input: PublishNo
       contractChangeId: input.contractChangeId,
       name: `${plan.name} onboarding`,
       status: 'approved',
-      changeType: 'api_contract_added',
+      changeType: SERVICE_NOTICE_CHANGE_TYPE,
       owner: context.sourceRepoParts.owner,
       path: contractFilePath(input.contractChangeId, plan.name),
       aliases: serviceAlias,
@@ -484,7 +486,7 @@ function buildSourceDocFromServicePlan(context: PublishContext, input: PublishNo
       contractChangeId: sourceContractId,
       name: `${plan.name} onboarding`,
       status: 'approved',
-      changeType: 'api_contract_added',
+      changeType: SERVICE_NOTICE_CHANGE_TYPE,
       owner: context.sourceRepoParts.owner,
       path: contractFilePath(sourceContractId, plan.name),
       aliases: serviceAlias,
@@ -517,7 +519,7 @@ function buildSourceDocFromServicePlan(context: PublishContext, input: PublishNo
   })
 
   existingRow.name = `${plan.name} onboarding`
-  existingRow.changeType = 'api_contract_added'
+  existingRow.changeType = SERVICE_NOTICE_CHANGE_TYPE
   existingRow.owner = context.sourceRepoParts.owner
   existingRow.path = existingRow.path || contractFilePath(existingRow.contractChangeId, plan.name)
   existingRow.aliases = mergeAliasTokens(existingRow.aliases, [serviceAlias])

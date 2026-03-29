@@ -119,7 +119,7 @@ Use this flow when SDX should create real `CC-*` contract-change PRs in downstre
 # optionally publish one CC only
 ./scripts/sdx publish notices --map platform-core --source-repo spec-system --contract-change-id CC-101
 
-# service onboarding mode: build source CC from plan, then publish downstream PRs
+# service onboarding mode: build source CC (`change_type: service_added`) from plan, then publish downstream PRs
 ./scripts/sdx publish notices --map platform-core --source-repo spec-system \
   --notice-type service \
   --plan ./plans/new-service-notice.md
