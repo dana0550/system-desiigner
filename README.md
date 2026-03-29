@@ -20,6 +20,7 @@
   <a href="#install-from-npm">Install from npm</a> •
   <a href="#one-command-setup">One-Command Setup</a> •
   <a href="#architecture-pack-org--service-deep-dives">Architecture Pack</a> •
+  <a href="#canonical-root-readme-generation">Canonical README</a> •
   <a href="#daily-workflow">Daily Workflow</a> •
   <a href="#for-codex-agents">For Codex Agents</a> •
   <a href="#release-process">Release Process</a>
@@ -133,6 +134,7 @@ From your SDX workspace root:
 ./scripts/sdx contracts extract --map platform-core
 ./scripts/sdx docs generate --map platform-core
 ./scripts/sdx architecture generate --map platform-core
+./scripts/sdx docs readme --map platform-core
 ```
 
 For planning and rollout:
@@ -174,6 +176,70 @@ Use overrides to:
 - assert missing relationships,
 - suppress incorrect inferred edges,
 - attach service owner/criticality/business context metadata.
+
+### Canonical Root README Generation
+Generate a complete root `README.md` as the canonical onboarding and architecture overview for your org workspace.
+
+```bash
+# generate/update root README.md
+./scripts/sdx docs readme --map platform-core
+
+# write to a different output file
+./scripts/sdx docs readme --map platform-core --output ARCHITECTURE.md
+
+# check mode for CI (non-zero on stale sources, missing sources, or README drift)
+./scripts/sdx docs readme --map platform-core --check
+
+# dry-run preview with unified diff and freshness summary
+./scripts/sdx docs readme --map platform-core --dry-run
+
+# selective sections
+./scripts/sdx docs readme --map platform-core \
+  --include what_is_this_system,architecture_glance,service_catalog \
+  --exclude glossary
+```
+
+Supported section IDs (baseline order):
+- `what_is_this_system`
+- `architecture_glance`
+- `service_catalog`
+- `critical_flows`
+- `event_async_topology`
+- `contracts_index`
+- `repository_index`
+- `environments_deployment`
+- `data_stores_boundaries`
+- `security_compliance`
+- `local_dev_contribution`
+- `runbooks_escalation`
+- `adr_index`
+- `glossary`
+- `changelog_metadata`
+
+README config file support (first existing file wins):
+- `.sdx/readme.config.json`
+- `.sdx/readme.config.yaml`
+- `.sdx/readme.config.yml`
+
+Config capabilities:
+- section toggles (`sections.include`, `sections.exclude`, `sections.enabled`)
+- repo include/exclude filters (`repos.include`, `repos.exclude`)
+- domain grouping (`domainGroups`)
+- owner/team overrides (`ownerTeamOverrides`)
+- diagram behavior (`diagram.autoGenerateMissing`, `diagram.includeC4Links`)
+- custom intro text (`customIntro`)
+- stale threshold override in hours (`staleThresholdHours`, default `72`)
+
+Manual content preservation:
+- generated wrappers: `<!-- SDX:SECTION:<id>:START --> ... <!-- SDX:SECTION:<id>:END -->`
+- preserved manual blocks: `<!-- SDX:SECTION:<id>:MANUAL:START --> ... <!-- SDX:SECTION:<id>:MANUAL:END -->`
+
+CI automation example:
+- copy [`docs/examples/readme-refresh.yml`](./docs/examples/readme-refresh.yml) into your consumer workspace repo under `.github/workflows/`.
+- set repo/org variables:
+  - `SDX_ORG` (required)
+  - `SDX_MAP` (optional, defaults to `all-services` in the workflow)
+- the workflow runs `repo sync`, `map build`, `contracts extract`, `docs generate`, and `docs readme`, then opens a PR.
 
 ## Cross-Repo Tech-Lead PRs (Spec-System Native)
 Use this flow when SDX should create real `CC-*` contract-change PRs in downstream repos that have spec-system initialized.
@@ -233,7 +299,8 @@ Use this minimal runbook when an agent needs architecture context quickly:
 3. `./scripts/sdx map build <map-id>`
 4. `./scripts/sdx contracts extract --map <map-id>`
 5. `./scripts/sdx architecture generate --map <map-id>`
-6. `./scripts/sdx codex run <task-type> --map <map-id> --input <file>`
+6. `./scripts/sdx docs readme --map <map-id>`
+7. `./scripts/sdx codex run <task-type> --map <map-id> --input <file>`
 
 Where outputs land:
 - `maps/<map-id>/service-map.json|md|mmd`
@@ -260,7 +327,7 @@ sdx prompt
 
 sdx architecture generate|validate
 sdx contracts extract
-sdx docs generate
+sdx docs generate|readme
 sdx plan review
 sdx service propose
 sdx handoff draft
