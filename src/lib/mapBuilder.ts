@@ -31,13 +31,13 @@ function readPackageDependencies(repoPath: string): string[] {
   try {
     const data = JSON.parse(fs.readFileSync(packagePath, 'utf8')) as {
       dependencies?: Record<string, string>
-      devDependencies?: Record<string, string>
+      optionalDependencies?: Record<string, string>
       peerDependencies?: Record<string, string>
     }
 
     const names = new Set<string>([
       ...Object.keys(data.dependencies ?? {}),
-      ...Object.keys(data.devDependencies ?? {}),
+      ...Object.keys(data.optionalDependencies ?? {}),
       ...Object.keys(data.peerDependencies ?? {}),
     ])
 
