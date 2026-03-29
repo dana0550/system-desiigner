@@ -144,3 +144,89 @@ export interface CodexContextPack {
   }
   inputFile?: string
 }
+
+export type PublishTargetStatus = 'created' | 'updated' | 'skipped' | 'failed'
+
+export interface NoticePublishTargetResult {
+  contractChangeId: string
+  targetRepoInput: string
+  targetRepoResolved?: string
+  targetContractChangeId?: string
+  owner: string
+  stateBefore: string
+  stateAfter: string
+  status: PublishTargetStatus
+  prUrl?: string
+  reason?: string
+}
+
+export interface NoticePublishContractResult {
+  contractChangeId: string
+  name: string
+  sourceStatusBefore: string
+  sourceStatusAfter: string
+  eligible: boolean
+  sourceSyncPrUrl?: string
+  targetResults: NoticePublishTargetResult[]
+}
+
+export interface NoticePublishResult {
+  schemaVersion: string
+  generatedAt: string
+  mapId: string
+  sourceRepo: string
+  contractChangeId?: string
+  noticeType: 'contract' | 'service'
+  planPath?: string
+  dryRun: boolean
+  ready: boolean
+  maxTargets?: number
+  failFastStoppedAt?: string
+  totals: {
+    created: number
+    updated: number
+    skipped: number
+    failed: number
+  }
+  contracts: NoticePublishContractResult[]
+  sourceSyncPrUrls: string[]
+  artifactJsonPath: string
+  artifactMarkdownPath: string
+}
+
+export interface PublishSyncTargetResult {
+  contractChangeId: string
+  repo: string
+  prUrl: string
+  stateBefore: string
+  stateAfter: string
+  status: 'updated' | 'skipped' | 'failed'
+  reason?: string
+}
+
+export interface PublishSyncContractResult {
+  contractChangeId: string
+  name: string
+  sourceStatusBefore: string
+  sourceStatusAfter: string
+  sourceSyncPrUrl?: string
+  targetResults: PublishSyncTargetResult[]
+}
+
+export interface PublishSyncResult {
+  schemaVersion: string
+  generatedAt: string
+  mapId: string
+  sourceRepo: string
+  contractChangeId?: string
+  dryRun: boolean
+  totals: {
+    updated: number
+    skipped: number
+    failed: number
+  }
+  contracts: PublishSyncContractResult[]
+  sourceSyncPrUrls: string[]
+  artifactJsonPath: string
+  artifactMarkdownPath: string
+}

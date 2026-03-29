@@ -23,6 +23,8 @@ export function ensureStandardDirs(cwd = process.cwd()): void {
   ensureDir(path.join(getDocsDir(cwd), 'adr'))
   ensureDir(path.join(cwd, 'plans', 'reviews'))
   ensureDir(path.join(cwd, 'handoffs'))
+  ensureDir(path.join(cwd, 'publish', 'notices'))
+  ensureDir(path.join(cwd, 'publish', 'sync'))
   ensureDir(path.join(getCodexDir(cwd), 'context-packs'))
   ensureDir(path.join(getCodexDir(cwd), 'runs'))
   ensureDir(path.join(cwd, 'diagrams'))

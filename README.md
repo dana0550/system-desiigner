@@ -32,9 +32,10 @@ You use it to:
 - track contracts,
 - review new service plans,
 - draft cross-team integration handoffs,
+- publish cross-repo spec-system contract-change PRs,
 - generate Codex-ready context packs.
 
-It is advisory by design in v1. It does not auto-open PRs or mutate infra.
+v1 remains manual-triggered. SDX can open draft notice PRs when you run publish commands, but it does not autonomously mutate runtime infrastructure.
 
 ## One-Command Setup
 If you only remember one command, use this:
@@ -108,6 +109,48 @@ For Codex:
 ./scripts/sdx codex run implementation-plan --map platform-core --input ./plans/new-service.md
 ```
 
+## Cross-Repo Tech-Lead PRs (Spec-System Native)
+Use this flow when SDX should create real `CC-*` contract-change PRs in downstream repos that have spec-system initialized.
+
+```bash
+# 1) Publish contract-change assignments (draft PRs by default)
+./scripts/sdx publish notices --map platform-core --source-repo spec-system
+
+# optionally publish one CC only
+./scripts/sdx publish notices --map platform-core --source-repo spec-system --contract-change-id CC-101
+
+# service onboarding mode: build source CC from plan, then publish downstream PRs
+./scripts/sdx publish notices --map platform-core --source-repo spec-system \
+  --notice-type service \
+  --plan ./plans/new-service-notice.md
+
+# make PRs ready-for-review instead of drafts
+./scripts/sdx publish notices --map platform-core --source-repo spec-system --ready
+
+# dry run preview
+./scripts/sdx publish notices --map platform-core --source-repo spec-system --dry-run
+
+# 2) Refresh lifecycle state from existing PR URLs
+./scripts/sdx publish sync --map platform-core --source-repo spec-system
+```
+
+Notes:
+- SDX creates/updates target repo spec-system artifacts:
+  - `docs/CONTRACT_CHANGES.md`
+  - `docs/contracts/CC-###-<slug>.md`
+- If a target repo is missing valid spec-system docs, publish fails fast with an explicit error.
+- Source writeback still uses source sync PRs (no direct default-branch writes).
+- Tokens need `contents:write` and `pull_requests:write` on source + target repos.
+
+### Service Plan Requirements (`--notice-type service --plan <file>`)
+The plan file must include these sections:
+
+- `## Service Identity` with bullets for `service_id` and/or `name`
+- `## Summary`
+- `## Contract Surface`
+- `## Compatibility and Migration Guidance`
+- `## Target Repositories` with table columns: `repo | owner | context`
+
 ## Prompt-Driven Scope Edits
 Preview first, apply second:
 
@@ -149,7 +192,7 @@ sdx docs generate
 sdx plan review
 sdx service propose
 sdx handoff draft
-sdx publish wiki
+sdx publish notices|sync|wiki
 sdx codex run
 
 sdx status
