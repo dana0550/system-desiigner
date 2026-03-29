@@ -587,13 +587,14 @@ function modelValidation(model: ArchitectureModelArtifact, contracts: ContractRe
   const serviceContracts = new Set(contracts.map((record) => record.repo))
 
   for (const service of services) {
+    const serviceId = service.id.replace('service:', '')
     const relations = model.edges.filter((edge) => edge.from === service.id || edge.to === service.id)
     const nonOwnership = relations.filter((edge) => edge.relation !== 'owns')
     if (nonOwnership.length === 0) {
       warnings.push(`Service '${service.label}' has no communication edges outside ownership links.`)
     }
 
-    if (!serviceContracts.has(service.label)) {
+    if (!serviceContracts.has(serviceId)) {
       warnings.push(`Service '${service.label}' has no detected contract files.`)
     }
   }
