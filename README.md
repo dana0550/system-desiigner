@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/readme/hero.svg" alt="SDX hero" width="100%" />
+  <img src="./assets/readme/banner_v2.png" alt="SDX hero" width="100%" />
 </p>
 
 <h1 align="center">SDX CLI</h1>
