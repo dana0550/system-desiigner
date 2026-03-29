@@ -17,6 +17,7 @@
 </p>
 
 <p align="center">
+  <a href="#install-from-npm">Install from npm</a> •
   <a href="#one-command-setup">One-Command Setup</a> •
   <a href="#daily-workflow">Daily Workflow</a> •
   <a href="#for-codex-agents">For Codex Agents</a> •
@@ -35,6 +36,28 @@ You use it to:
 - generate Codex-ready context packs.
 
 v1 remains manual-triggered. SDX can open draft notice PRs when you run publish commands, but it does not autonomously mutate runtime infrastructure.
+
+## Install from npm
+Prerequisite: Node.js `20+`.
+
+Choose one install mode:
+
+```bash
+# A) No install, run directly (recommended for first run)
+npx --yes sdx-cli@latest --help
+
+# B) Global install
+npm install -g sdx-cli
+sdx --help
+
+# C) Project-pinned install (recommended for teams)
+npm install --save-dev sdx-cli
+npx sdx --help
+```
+
+Team recommendation:
+- use `bootstrap quick` once per org workspace,
+- then run `./scripts/sdx ...` so the workspace stays pinned to one CLI version.
 
 ## One-Command Setup
 ### Org Initialization
@@ -239,6 +262,14 @@ This repo uses Changesets and releases from `main`.
 - Publish prerequisites:
   - configure npm auth for CI (`NPM_TOKEN` repo secret),
   - allow workflow pushes to `main` under your branch protection policy.
+  - use an npm automation token with package `Read and write` and 2FA bypass enabled for CI publish.
+
+Set npm token secret (maintainers):
+
+```bash
+gh secret set NPM_TOKEN --repo dana0550/system-desiigner
+gh secret list --repo dana0550/system-desiigner | rg NPM_TOKEN
+```
 
 Maintainer commands:
 
