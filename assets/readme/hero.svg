@@ -1,0 +1,80 @@
+<svg width="1600" height="640" viewBox="0 0 1600 640" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">SDX Hero</title>
+  <desc id="desc">AI-inspired system design banner with a wrapped ribbon motif.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1600" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#061023"/>
+      <stop offset="0.5" stop-color="#0E1B34"/>
+      <stop offset="1" stop-color="#112B38"/>
+    </linearGradient>
+    <linearGradient id="ribbonA" x1="318" y1="130" x2="1278" y2="510" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3BE4C8"/>
+      <stop offset="0.45" stop-color="#53B8FF"/>
+      <stop offset="1" stop-color="#7DFB8D"/>
+    </linearGradient>
+    <linearGradient id="ribbonB" x1="294" y1="519" x2="1299" y2="95" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F8C66A"/>
+      <stop offset="0.5" stop-color="#F18E8E"/>
+      <stop offset="1" stop-color="#A3F0FF"/>
+    </linearGradient>
+    <radialGradient id="core" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(800 320) rotate(90) scale(190)">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#7BE8FF" stop-opacity="0.16"/>
+    </radialGradient>
+    <filter id="glow" x="0" y="0" width="1600" height="640" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="640" fill="url(#bg)"/>
+
+  <g opacity="0.16">
+    <path d="M120 96H1480" stroke="#78A7FF" stroke-width="1"/>
+    <path d="M120 160H1480" stroke="#78A7FF" stroke-width="1"/>
+    <path d="M120 224H1480" stroke="#78A7FF" stroke-width="1"/>
+    <path d="M120 288H1480" stroke="#78A7FF" stroke-width="1"/>
+    <path d="M120 352H1480" stroke="#78A7FF" stroke-width="1"/>
+    <path d="M120 416H1480" stroke="#78A7FF" stroke-width="1"/>
+    <path d="M120 480H1480" stroke="#78A7FF" stroke-width="1"/>
+    <path d="M120 544H1480" stroke="#78A7FF" stroke-width="1"/>
+    <path d="M220 64V576" stroke="#6E96EF" stroke-width="1"/>
+    <path d="M420 64V576" stroke="#6E96EF" stroke-width="1"/>
+    <path d="M620 64V576" stroke="#6E96EF" stroke-width="1"/>
+    <path d="M820 64V576" stroke="#6E96EF" stroke-width="1"/>
+    <path d="M1020 64V576" stroke="#6E96EF" stroke-width="1"/>
+    <path d="M1220 64V576" stroke="#6E96EF" stroke-width="1"/>
+    <path d="M1420 64V576" stroke="#6E96EF" stroke-width="1"/>
+  </g>
+
+  <g filter="url(#glow)">
+    <path d="M274 310C346 179 493 110 636 121C760 131 798 228 913 244C1034 262 1138 201 1265 250" stroke="url(#ribbonA)" stroke-width="38" stroke-linecap="round"/>
+    <path d="M328 426C452 522 566 549 708 514C848 481 930 385 1026 374C1134 362 1216 432 1308 462" stroke="url(#ribbonB)" stroke-width="30" stroke-linecap="round"/>
+    <path d="M460 202C565 256 648 252 754 206" stroke="#9EE4FF" stroke-opacity="0.72" stroke-width="10" stroke-linecap="round"/>
+    <path d="M855 433C962 396 1030 394 1124 441" stroke="#9DF6C4" stroke-opacity="0.72" stroke-width="10" stroke-linecap="round"/>
+  </g>
+
+  <circle cx="800" cy="320" r="132" fill="url(#core)"/>
+  <circle cx="800" cy="320" r="108" stroke="#B5EEFF" stroke-opacity="0.65" stroke-width="2"/>
+  <circle cx="800" cy="320" r="86" stroke="#8EEAFF" stroke-opacity="0.55" stroke-width="2"/>
+
+  <g fill="#D7F7FF" fill-opacity="0.96">
+    <circle cx="560" cy="168" r="6"/>
+    <circle cx="632" cy="128" r="5"/>
+    <circle cx="946" cy="231" r="6"/>
+    <circle cx="1227" cy="252" r="6"/>
+    <circle cx="694" cy="514" r="6"/>
+    <circle cx="1134" cy="441" r="6"/>
+    <circle cx="1307" cy="462" r="6"/>
+  </g>
+
+  <g font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" fill="#E9FBFF">
+    <text x="172" y="208" font-size="56" font-weight="700" letter-spacing="1.2">SDX</text>
+    <text x="172" y="256" font-size="20" font-weight="500" fill="#9DD8E8">System Design Intelligence CLI</text>
+    <text x="172" y="305" font-size="17" fill="#C8EDF6">Cross-repo architecture maps, contracts, planning reviews, and codex context packs.</text>
+    <text x="172" y="340" font-size="17" fill="#C8EDF6">A wrapped-ribbon nod to the designer: structure around complexity.</text>
+  </g>
+</svg>
