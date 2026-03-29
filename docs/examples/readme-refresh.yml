@@ -1,0 +1,49 @@
+name: sdx-readme-refresh
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 16 * * 1'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+
+      - run: npm ci
+
+      - name: Refresh SDX artifacts and root README
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SDX_ORG: ${{ vars.SDX_ORG }}
+          SDX_MAP: ${{ vars.SDX_MAP || 'all-services' }}
+        run: |
+          ./scripts/sdx repo sync --org "${SDX_ORG}"
+          ./scripts/sdx map build "${SDX_MAP}"
+          ./scripts/sdx contracts extract --map "${SDX_MAP}"
+          ./scripts/sdx docs generate --map "${SDX_MAP}"
+          ./scripts/sdx docs readme --map "${SDX_MAP}"
+
+      - name: Open update PR
+        uses: peter-evans/create-pull-request@v7
+        with:
+          title: "docs(sdx): refresh architecture README"
+          body: |
+            Automated SDX refresh:
+            - repo sync
+            - map build
+            - contracts extract
+            - docs generate
+            - docs readme
+          branch: chore/sdx-readme-refresh
+          commit-message: "docs(sdx): refresh generated architecture README"
+          labels: automation, sdx
