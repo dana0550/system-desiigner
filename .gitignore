@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.sdx/state.db
+.sdx/state.db-*
+coverage/
+.DS_Store
