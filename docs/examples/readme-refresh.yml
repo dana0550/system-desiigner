@@ -21,11 +21,19 @@ jobs:
 
       - run: npm ci
 
+      - name: Verify Codex CLI is available
+        env:
+          CODEX_CMD: ${{ vars.CODEX_CMD || 'codex' }}
+        run: |
+          "${CODEX_CMD}" --version
+          echo "Codex CLI must be pre-authenticated for non-interactive runs."
+
       - name: Refresh SDX artifacts and root README
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SDX_ORG: ${{ vars.SDX_ORG }}
           SDX_MAP: ${{ vars.SDX_MAP || 'all-services' }}
+          CODEX_CMD: ${{ vars.CODEX_CMD || 'codex' }}
         run: |
           ./scripts/sdx repo sync --org "${SDX_ORG}"
           ./scripts/sdx map build "${SDX_MAP}"
