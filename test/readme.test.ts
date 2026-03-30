@@ -156,6 +156,22 @@ function setupWorkspaceWithMap(root: string): ReturnType<typeof initProject> {
   return context
 }
 
+function mockCodexRun(root: string, stdout: string) {
+  return {
+    promptPath: path.join(root, 'codex', 'runs', 'mock.prompt.txt'),
+    runMarkdownPath: path.join(root, 'codex', 'runs', 'mock.md'),
+    runJsonPath: path.join(root, 'codex', 'runs', 'mock.json'),
+    exitCode: 0 as const,
+    invocationMode: 'stdin' as const,
+    stdout,
+    stderr: '',
+  }
+}
+
+function llmSectionsPayload(sections: Array<{id: ReadmeSectionId; body: string[]}>): string {
+  return JSON.stringify({sections})
+}
+
 describe('docs readme generator', () => {
   it('generates useful README content from repo docs and remains idempotent', async () => {
     const root = mkTempDir()
@@ -168,6 +184,7 @@ describe('docs readme generator', () => {
       mapId: 'platform-core',
       db: context.db,
       cwd: root,
+      deterministic: true,
     })
 
     expect(first.wroteFile).toBe(true)
@@ -193,6 +210,7 @@ describe('docs readme generator', () => {
       mapId: 'platform-core',
       db: context.db,
       cwd: root,
+      deterministic: true,
     })
 
     expect(second.changed).toBe(false)
@@ -212,6 +230,7 @@ describe('docs readme generator', () => {
       output: 'README.filtered.md',
       includeSections: ['what_is_this_system', 'service_catalog'] as ReadmeSectionId[],
       excludeSections: ['service_catalog'] as ReadmeSectionId[],
+      deterministic: true,
     })
 
     expect(result.sections).toEqual(['what_is_this_system'])
@@ -232,7 +251,7 @@ describe('docs readme generator', () => {
     fs.writeFileSync(path.join(appDir, 'readme.config.yaml'), 'customIntro: "YAML intro"\n', 'utf8')
     fs.writeFileSync(path.join(appDir, 'readme.config.json'), JSON.stringify({customIntro: 'JSON intro'}, null, 2), 'utf8')
 
-    await generateReadme({mapId: 'platform-core', db: context.db, cwd: root, output: 'README.config.md'})
+    await generateReadme({mapId: 'platform-core', db: context.db, cwd: root, output: 'README.config.md', deterministic: true})
 
     const content = fs.readFileSync(path.join(root, 'README.config.md'), 'utf8')
     expect(content).toContain('JSON intro')
@@ -246,6 +265,7 @@ describe('docs readme generator', () => {
         db: context.db,
         cwd: root,
         output: 'README.invalid.md',
+        deterministic: true,
       }),
     ).rejects.toThrow()
 
@@ -260,13 +280,14 @@ describe('docs readme generator', () => {
     fs.mkdirSync(appDir, {recursive: true})
     fs.writeFileSync(path.join(appDir, 'readme.config.json'), JSON.stringify({staleThresholdHours: 0.000001}, null, 2), 'utf8')
 
-    await generateReadme({mapId: 'platform-core', db: context.db, cwd: root})
+    await generateReadme({mapId: 'platform-core', db: context.db, cwd: root, deterministic: true})
 
     const checked = await generateReadme({
       mapId: 'platform-core',
       db: context.db,
       cwd: root,
       check: true,
+      deterministic: true,
     })
 
     expect(checked.checkPassed).toBe(false)
@@ -284,6 +305,7 @@ describe('docs readme generator', () => {
       db: context.db,
       cwd: root,
       check: true,
+      deterministic: true,
     })
 
     expect(checked.checkPassed).toBe(false)
@@ -301,6 +323,7 @@ describe('docs readme generator', () => {
       db: context.db,
       cwd: root,
       dryRun: true,
+      deterministic: true,
     })
 
     expect(result.wroteFile).toBe(false)
@@ -334,12 +357,185 @@ describe('docs readme generator', () => {
     saveScopeManifest(scope, root)
     buildMapArtifacts('minimal-map', context.db, root)
 
-    await generateReadme({mapId: 'minimal-map', db: context.db, cwd: root})
+    await generateReadme({mapId: 'minimal-map', db: context.db, cwd: root, deterministic: true})
 
     const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8')
     expect(readme).toContain('Unknown')
     expect(readme).toContain('| Service name | Repository | Owner/team | Runtime/framework | API/event surface | Dependencies | Data stores | Deploy target | Tier/criticality | Status |')
 
+    context.db.close()
+  })
+
+  it('produces a stable evidence hash for identical deterministic inputs', async () => {
+    const root = mkTempDir()
+    const context = setupWorkspaceWithMap(root)
+
+    const first = await generateReadme({
+      mapId: 'platform-core',
+      db: context.db,
+      cwd: root,
+      deterministic: true,
+      dryRun: true,
+    })
+
+    const second = await generateReadme({
+      mapId: 'platform-core',
+      db: context.db,
+      cwd: root,
+      deterministic: true,
+      dryRun: true,
+    })
+
+    expect(first.evidenceHash).toBe(second.evidenceHash)
+    context.db.close()
+  })
+
+  it('generates README via LLM mode with sentence citations and passes check parity', async () => {
+    const root = mkTempDir()
+    const context = setupWorkspaceWithMap(root)
+    const configDir = path.join(root, '.sdx')
+    fs.mkdirSync(configDir, {recursive: true})
+    fs.writeFileSync(path.join(configDir, 'readme.config.json'), JSON.stringify({llm: {maxRetries: 0}}, null, 2), 'utf8')
+
+    const response = llmSectionsPayload([
+      {
+        id: 'what_is_this_system',
+        body: [
+          '- Map platform-core belongs to org acme. [src:scope]',
+          '- Services include api-service and events-service. [src:service-map-json]',
+        ],
+      },
+      {
+        id: 'architecture_glance',
+        body: [
+          '- The service map includes api-service and events-service nodes. [src:service-map-json]',
+          '- Flow graph artifacts are generated for platform-core. [src:flow-graph]',
+        ],
+      },
+    ])
+
+    const generated = await generateReadme({
+      mapId: 'platform-core',
+      db: context.db,
+      cwd: root,
+      includeSections: ['what_is_this_system', 'architecture_glance'] as ReadmeSectionId[],
+      codexRunner: () => mockCodexRun(root, response),
+    })
+
+    expect(generated.verificationPassed).toBe(true)
+    expect(generated.unsupportedClaimCount).toBe(0)
+    expect(generated.llmRunPath).toContain('codex/runs/')
+
+    const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8')
+    expect(readme).toContain('[src:scope]')
+    expect(readme).toContain('SDX:LLM:EVIDENCE_HASH')
+
+    const checked = await generateReadme({
+      mapId: 'platform-core',
+      db: context.db,
+      cwd: root,
+      includeSections: ['what_is_this_system', 'architecture_glance'] as ReadmeSectionId[],
+      check: true,
+    })
+
+    expect(checked.checkPassed).toBe(true)
+    context.db.close()
+  })
+
+  it('hard-fails LLM mode when citations are missing and does not write README', async () => {
+    const root = mkTempDir()
+    const context = setupWorkspaceWithMap(root)
+    const configDir = path.join(root, '.sdx')
+    fs.mkdirSync(configDir, {recursive: true})
+    fs.writeFileSync(path.join(configDir, 'readme.config.json'), JSON.stringify({llm: {maxRetries: 0}}, null, 2), 'utf8')
+
+    const invalid = llmSectionsPayload([
+      {
+        id: 'what_is_this_system',
+        body: ['Map platform-core belongs to org acme.'],
+      },
+      {
+        id: 'architecture_glance',
+        body: ['Service map includes api-service and events-service nodes. [src:service-map-json]'],
+      },
+    ])
+
+    await expect(() =>
+      generateReadme({
+        mapId: 'platform-core',
+        db: context.db,
+        cwd: root,
+        includeSections: ['what_is_this_system', 'architecture_glance'] as ReadmeSectionId[],
+        codexRunner: () => mockCodexRun(root, invalid),
+      }),
+    ).rejects.toThrow(/failed/)
+
+    expect(fs.existsSync(path.join(root, 'README.md'))).toBe(false)
+    context.db.close()
+  })
+
+  it('fails llm check mode on evidence hash drift and invalid source citations', async () => {
+    const root = mkTempDir()
+    const context = setupWorkspaceWithMap(root)
+    const configDir = path.join(root, '.sdx')
+    fs.mkdirSync(configDir, {recursive: true})
+    fs.writeFileSync(path.join(configDir, 'readme.config.json'), JSON.stringify({llm: {maxRetries: 0}}, null, 2), 'utf8')
+
+    const response = llmSectionsPayload([
+      {
+        id: 'what_is_this_system',
+        body: [
+          '- Map platform-core belongs to org acme. [src:scope]',
+          '- Services include api-service and events-service. [src:service-map-json]',
+        ],
+      },
+      {
+        id: 'architecture_glance',
+        body: ['- Service map includes api-service and events-service nodes. [src:service-map-json]'],
+      },
+    ])
+
+    await generateReadme({
+      mapId: 'platform-core',
+      db: context.db,
+      cwd: root,
+      includeSections: ['what_is_this_system', 'architecture_glance'] as ReadmeSectionId[],
+      codexRunner: () => mockCodexRun(root, response),
+    })
+
+    const readmePath = path.join(root, 'README.md')
+    let readme = fs.readFileSync(readmePath, 'utf8')
+    readme = readme.replace(/SDX:LLM:EVIDENCE_HASH=[a-f0-9]+/, 'SDX:LLM:EVIDENCE_HASH=deadbeef')
+    fs.writeFileSync(readmePath, readme, 'utf8')
+
+    const hashCheck = await generateReadme({
+      mapId: 'platform-core',
+      db: context.db,
+      cwd: root,
+      includeSections: ['what_is_this_system', 'architecture_glance'] as ReadmeSectionId[],
+      check: true,
+    })
+    expect(hashCheck.checkPassed).toBe(false)
+
+    await generateReadme({
+      mapId: 'platform-core',
+      db: context.db,
+      cwd: root,
+      includeSections: ['what_is_this_system', 'architecture_glance'] as ReadmeSectionId[],
+      codexRunner: () => mockCodexRun(root, response),
+    })
+
+    readme = fs.readFileSync(readmePath, 'utf8').replace(/\[src:scope\]/g, '[src:not-real]')
+    fs.writeFileSync(readmePath, readme, 'utf8')
+
+    const citationCheck = await generateReadme({
+      mapId: 'platform-core',
+      db: context.db,
+      cwd: root,
+      includeSections: ['what_is_this_system', 'architecture_glance'] as ReadmeSectionId[],
+      check: true,
+    })
+    expect(citationCheck.checkPassed).toBe(false)
     context.db.close()
   })
 

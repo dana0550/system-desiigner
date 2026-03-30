@@ -8,7 +8,16 @@ export default class DocsReadmeCommand extends Command {
   static override flags = {
     map: Flags.string({required: true, description: 'Map identifier'}),
     output: Flags.string({required: false, default: 'README.md', description: 'README output path'}),
-    check: Flags.boolean({required: false, default: false, description: 'Check mode (no writes, non-zero on stale/missing/diff)'}),
+    deterministic: Flags.boolean({
+      required: false,
+      default: false,
+      description: 'Use deterministic renderer (bypass Codex LLM pipeline)',
+    }),
+    check: Flags.boolean({
+      required: false,
+      default: false,
+      description: 'Check mode (no writes; non-zero on stale/missing sources, citation issues, or evidence hash drift)',
+    }),
     'dry-run': Flags.boolean({required: false, default: false, description: 'Preview mode (no writes, print unified diff + summary)'}),
     include: Flags.string({
       required: false,
@@ -36,6 +45,7 @@ export default class DocsReadmeCommand extends Command {
       excludeSections,
       check: flags.check,
       dryRun: flags['dry-run'],
+      deterministic: flags.deterministic,
     })
 
     const status: 'ok' | 'error' = result.checkPassed ? 'ok' : 'error'
@@ -48,6 +58,11 @@ export default class DocsReadmeCommand extends Command {
       missingSources: result.missingSources.map((source) => source.label),
       dryRun: flags['dry-run'],
       check: flags.check,
+      deterministic: flags.deterministic,
+      verificationPassed: result.verificationPassed,
+      unsupportedClaimCount: result.unsupportedClaimCount,
+      evidenceHash: result.evidenceHash,
+      llmRunPath: result.llmRunPath,
     })
 
     context.db.close()

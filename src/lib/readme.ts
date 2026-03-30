@@ -1,9 +1,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import {createHash} from 'node:crypto'
 import Database from 'better-sqlite3'
 import YAML from 'yaml'
 import {z} from 'zod'
 import {generateArchitecturePack, buildArchitectureModel} from './architecture'
+import {CodexPromptRunInput, CodexPromptRunResult, runCodexPrompt} from './codex'
 import {loadConfig} from './config'
 import {SCHEMA_VERSION} from './constants'
 import {extractContracts} from './contracts'
@@ -68,6 +70,60 @@ const SECTION_TITLES: Record<ReadmeSectionId, string> = {
 }
 
 const REQUIRED_DIAGRAM_NAMES = ['system-context.mmd', 'service-dependency.mmd', 'core-request-flow.mmd'] as const
+const DEFAULT_LLM_MAX_RETRIES = 2
+const MAX_EVIDENCE_SOURCE_CHARS = 4000
+const SDX_LLM_EVIDENCE_MARKER = 'SDX:LLM:EVIDENCE_HASH'
+const SDX_LLM_VERIFICATION_MARKER = 'SDX:LLM:VERIFICATION_PASSED'
+const SDX_LLM_UNSUPPORTED_MARKER = 'SDX:LLM:UNSUPPORTED_CLAIMS'
+
+const COMMON_STOP_WORDS = new Set([
+  'about',
+  'after',
+  'again',
+  'also',
+  'among',
+  'because',
+  'before',
+  'between',
+  'build',
+  'change',
+  'changes',
+  'check',
+  'checks',
+  'current',
+  'data',
+  'docs',
+  'during',
+  'each',
+  'engineering',
+  'from',
+  'generated',
+  'have',
+  'into',
+  'last',
+  'more',
+  'only',
+  'path',
+  'paths',
+  'readme',
+  'section',
+  'sections',
+  'service',
+  'services',
+  'should',
+  'source',
+  'sources',
+  'system',
+  'than',
+  'that',
+  'this',
+  'those',
+  'through',
+  'using',
+  'with',
+  'without',
+  'workflow',
+])
 
 const README_CONFIG_SCHEMA = z.object({
   sections: z
@@ -100,6 +156,14 @@ const README_CONFIG_SCHEMA = z.object({
     .optional(),
   customIntro: z.string().optional(),
   staleThresholdHours: z.number().positive().optional(),
+  llm: z
+    .object({
+      enabled: z.boolean().optional(),
+      maxRetries: z.number().int().min(0).max(5).optional(),
+      failOnUngrounded: z.boolean().optional(),
+      citationMode: z.literal('sentence').optional(),
+    })
+    .optional(),
 })
 
 export interface ReadmeConfig {
@@ -123,6 +187,12 @@ export interface ReadmeConfig {
   }
   customIntro?: string
   staleThresholdHours?: number
+  llm?: {
+    enabled?: boolean
+    maxRetries?: number
+    failOnUngrounded?: boolean
+    citationMode?: 'sentence'
+  }
 }
 
 interface SourceRef {
@@ -251,6 +321,8 @@ export interface GenerateReadmeOptions {
   excludeSections?: ReadmeSectionId[]
   check?: boolean
   dryRun?: boolean
+  deterministic?: boolean
+  codexRunner?: (input: CodexPromptRunInput) => CodexPromptRunResult
 }
 
 export interface GenerateReadmeResult {
@@ -262,6 +334,10 @@ export interface GenerateReadmeResult {
   changed: boolean
   wroteFile: boolean
   checkPassed: boolean
+  verificationPassed: boolean
+  unsupportedClaimCount: number
+  evidenceHash: string
+  llmRunPath?: string
   summary: string
   diff?: string
 }
@@ -269,6 +345,53 @@ export interface GenerateReadmeResult {
 interface RenderOutput {
   content: string
   sourceRefs: SourceRef[]
+}
+
+interface ReadmeEvidenceSource {
+  id: string
+  label: string
+  path: string
+  required: boolean
+  exists: boolean
+  stale: boolean
+  generatedAt?: string
+  note?: string
+  content: string
+}
+
+interface ReadmeEvidencePack {
+  schemaVersion: string
+  mapId: string
+  org: string
+  snapshotAt: string
+  selectedSections: ReadmeSectionId[]
+  sources: ReadmeEvidenceSource[]
+  sectionEvidence: Array<{
+    id: ReadmeSectionId
+    title: string
+    sourceIds: string[]
+    baselineBody: string[]
+  }>
+}
+
+interface LlmReadmeSectionPayload {
+  id: ReadmeSectionId
+  body: string[]
+}
+
+interface LlmReadmeResponse {
+  sections: LlmReadmeSectionPayload[]
+}
+
+interface VerificationIssue {
+  sectionId: ReadmeSectionId
+  message: string
+}
+
+interface VerificationResult {
+  passed: boolean
+  unsupportedClaimCount: number
+  issues: VerificationIssue[]
 }
 
 interface CorePathStep {
@@ -2711,6 +2834,415 @@ function renderReadme(sections: SectionPayload[], context: ReadmeContext): Rende
   }
 }
 
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(',')}]`
+  }
+
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right))
+    return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`).join(',')}}`
+  }
+
+  return JSON.stringify(value)
+}
+
+function hashString(value: string): string {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+function normalizeForMatch(value: string): string {
+  return value.toLowerCase().replace(/`/g, '').replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+function sourceContentForEvidence(source: SourceRef, cwd: string): string {
+  const resolved = path.resolve(cwd, source.path)
+  if (!source.exists || !fileExists(resolved)) {
+    return source.note ?? 'Source file is unavailable.'
+  }
+
+  const text = safeReadText(resolved).trim()
+  if (text.length === 0) {
+    return 'Source file is empty.'
+  }
+
+  if (text.length <= MAX_EVIDENCE_SOURCE_CHARS) {
+    return text
+  }
+
+  return `${text.slice(0, MAX_EVIDENCE_SOURCE_CHARS)}\n...[truncated]`
+}
+
+function buildEvidencePack(context: ReadmeContext, sections: SectionPayload[]): ReadmeEvidencePack {
+  const sources = [...context.sources]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((source) => ({
+      id: source.id,
+      label: source.label,
+      path: source.path,
+      required: source.required,
+      exists: source.exists,
+      stale: source.stale,
+      generatedAt: source.generatedAt,
+      note: source.note,
+      content: sourceContentForEvidence(source, context.cwd),
+    }))
+
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    mapId: context.mapId,
+    org: context.scope.org,
+    snapshotAt: context.sourceSnapshotAt,
+    selectedSections: sections.map((section) => section.id),
+    sources,
+    sectionEvidence: sections.map((section) => ({
+      id: section.id,
+      title: section.title,
+      sourceIds: [...section.sourceIds].sort((left, right) => left.localeCompare(right)),
+      baselineBody: section.body,
+    })),
+  }
+}
+
+function evidenceHashForPack(pack: ReadmeEvidencePack): string {
+  const digestShape = {
+    mapId: pack.mapId,
+    org: pack.org,
+    selectedSections: pack.selectedSections,
+    sources: pack.sources.map((source) => ({
+      id: source.id,
+      label: source.label,
+      path: source.path,
+      required: source.required,
+      exists: source.exists,
+      stale: source.stale,
+      generatedAt: source.generatedAt ?? null,
+      contentHash: hashString(source.content),
+    })),
+    sectionEvidence: pack.sectionEvidence.map((section) => ({
+      id: section.id,
+      sourceIds: section.sourceIds,
+      baselineHash: hashString(section.baselineBody.join('\n')),
+    })),
+  }
+
+  return hashString(stableStringify(digestShape))
+}
+
+function createLlmReadmePrompt(
+  pack: ReadmeEvidencePack,
+  evidenceHash: string,
+  feedback: string | undefined,
+  previousOutput: string | undefined,
+): string {
+  const lines = [
+    'You are generating a canonical system architecture README.',
+    'You MUST return valid JSON only (no markdown fences, no prose before/after).',
+    '',
+    'Hard requirements:',
+    '- Preserve exact section ID set and order from selectedSections.',
+    '- For factual claims, include sentence-level citations in the form [src:<source-id>].',
+    '- Use only source IDs from the evidence pack.',
+    '- If evidence is missing, write Unknown rather than guessing.',
+    '- Keep output concise and technical.',
+    '',
+    'Output JSON schema:',
+    '{"sections":[{"id":"<section-id>","body":["line 1","line 2"]}]}',
+    '',
+    `Evidence hash: ${evidenceHash}`,
+    'Evidence pack JSON:',
+    JSON.stringify(pack, null, 2),
+  ]
+
+  if (feedback && feedback.trim().length > 0) {
+    lines.push('')
+    lines.push('Validation feedback from previous attempt (must fix all issues):')
+    lines.push(feedback)
+  }
+
+  if (previousOutput && previousOutput.trim().length > 0) {
+    lines.push('')
+    lines.push('Previous output to correct:')
+    lines.push(previousOutput)
+  }
+
+  lines.push('')
+  lines.push('Return JSON only.')
+
+  return `${lines.join('\n')}\n`
+}
+
+function extractJsonPayload(rawOutput: string): string {
+  const trimmed = rawOutput.trim()
+  if (trimmed.length === 0) {
+    throw new Error('Codex returned an empty response.')
+  }
+
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    return trimmed
+  }
+
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  if (fenced?.[1]) {
+    const candidate = fenced[1].trim()
+    if (candidate.startsWith('{') && candidate.endsWith('}')) {
+      return candidate
+    }
+  }
+
+  const firstBrace = trimmed.indexOf('{')
+  const lastBrace = trimmed.lastIndexOf('}')
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    return trimmed.slice(firstBrace, lastBrace + 1)
+  }
+
+  throw new Error('Codex output did not contain a JSON object payload.')
+}
+
+function parseLlmReadmeResponse(output: string, expectedSections: ReadmeSectionId[]): LlmReadmeResponse {
+  const schema = z.object({
+    sections: z.array(
+      z.object({
+        id: z.string(),
+        body: z.array(z.string()),
+      }),
+    ),
+  })
+
+  const payload = schema.parse(JSON.parse(extractJsonPayload(output)))
+  if (payload.sections.length !== expectedSections.length) {
+    throw new Error(`Expected ${expectedSections.length} sections but received ${payload.sections.length}.`)
+  }
+
+  const sections = payload.sections.map((section, index) => {
+    const expectedId = expectedSections[index]
+    if (section.id !== expectedId) {
+      throw new Error(`Section order mismatch at position ${index + 1}: expected '${expectedId}', received '${section.id}'.`)
+    }
+
+    return {
+      id: expectedId,
+      body: section.body,
+    }
+  })
+
+  return {sections}
+}
+
+function isSeparatorTableRow(line: string): boolean {
+  const trimmed = line.trim()
+  return /^\|?[\s:-]+\|[\s|:-]*$/.test(trimmed)
+}
+
+function extractSourceCitations(text: string): string[] {
+  const matches = text.matchAll(/\[src:([a-z0-9._-]+)\]/gi)
+  return [...new Set(Array.from(matches, (match) => match[1].toLowerCase()))]
+}
+
+function stripSourceCitations(text: string): string {
+  return text.replace(/\s*\[src:[a-z0-9._-]+\]/gi, '').trim()
+}
+
+function claimTokens(text: string): string[] {
+  const normalized = normalizeForMatch(text)
+  if (normalized.length === 0) {
+    return []
+  }
+
+  const parts = normalized
+    .split(' ')
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 4 && !COMMON_STOP_WORDS.has(token))
+
+  return [...new Set(parts)]
+}
+
+function isClaimGrounded(claimText: string, citations: string[], sourceLookup: Map<string, string>): boolean {
+  const tokens = claimTokens(claimText)
+  if (tokens.length === 0) {
+    return true
+  }
+
+  const requiredMatches = tokens.length >= 8 ? 3 : tokens.length >= 4 ? 2 : 1
+
+  for (const citation of citations) {
+    const source = sourceLookup.get(citation)
+    if (!source) {
+      continue
+    }
+
+    let matches = 0
+    for (const token of tokens) {
+      if (source.includes(token)) {
+        matches += 1
+      }
+    }
+
+    if (matches >= requiredMatches) {
+      return true
+    }
+  }
+
+  return false
+}
+
+function isLineIgnorableForCitation(line: string, inCodeFence: boolean): boolean {
+  if (inCodeFence) {
+    return true
+  }
+
+  const trimmed = line.trim()
+  if (trimmed.length === 0) {
+    return true
+  }
+
+  if (trimmed.startsWith('## ')) {
+    return true
+  }
+
+  if (trimmed.startsWith('# ')) {
+    return true
+  }
+
+  if (trimmed.startsWith('```')) {
+    return true
+  }
+
+  return false
+}
+
+function verifyLlmReadme(
+  sections: SectionPayload[],
+  evidencePack: ReadmeEvidencePack,
+  failOnUngrounded: boolean,
+): VerificationResult {
+  const issues: VerificationIssue[] = []
+  const sourceLookup = new Map(evidencePack.sources.map((source) => [source.id, normalizeForMatch(source.content)]))
+  let unsupportedClaimCount = 0
+
+  for (const section of sections) {
+    let inCodeFence = false
+
+    for (const line of section.body) {
+      if (line.trim().startsWith('```')) {
+        inCodeFence = !inCodeFence
+      }
+
+      if (isLineIgnorableForCitation(line, inCodeFence)) {
+        continue
+      }
+
+      if (line.trim().startsWith('|') && isSeparatorTableRow(line)) {
+        continue
+      }
+
+      const sentences = line.trim().startsWith('|')
+        ? [line]
+        : line
+            .split(/(?<=[.!?])\s+/)
+            .map((sentence) => sentence.trim())
+            .filter((sentence) => sentence.length > 0)
+      const lineLevelCitations = extractSourceCitations(line)
+
+      for (const sentence of sentences) {
+        const claim = stripSourceCitations(sentence)
+        if (claim.length === 0) {
+          continue
+        }
+
+        if (/^unknown\b/i.test(claim)) {
+          continue
+        }
+
+        const citations = (() => {
+          const inline = extractSourceCitations(sentence)
+          if (inline.length > 0) {
+            return inline
+          }
+          return lineLevelCitations
+        })()
+        if (citations.length === 0) {
+          unsupportedClaimCount += 1
+          issues.push({
+            sectionId: section.id,
+            message: `Missing citation for claim: "${claim}"`,
+          })
+          continue
+        }
+
+        const invalid = citations.filter((citation) => !sourceLookup.has(citation))
+        if (invalid.length > 0) {
+          unsupportedClaimCount += 1
+          issues.push({
+            sectionId: section.id,
+            message: `Unknown source citation(s): ${invalid.join(', ')} in claim "${claim}"`,
+          })
+          continue
+        }
+
+        if (failOnUngrounded && !isClaimGrounded(claim, citations, sourceLookup)) {
+          unsupportedClaimCount += 1
+          issues.push({
+            sectionId: section.id,
+            message: `Claim is not grounded in cited evidence: "${claim}"`,
+          })
+        }
+      }
+    }
+  }
+
+  return {
+    passed: issues.length === 0,
+    unsupportedClaimCount,
+    issues,
+  }
+}
+
+function buildSectionsFromLlmResponse(
+  baseSections: SectionPayload[],
+  llmResponse: LlmReadmeResponse,
+): SectionPayload[] {
+  const byId = new Map(llmResponse.sections.map((section) => [section.id, section]))
+  return baseSections.map((section) => ({
+    ...section,
+    body: [...(byId.get(section.id)?.body ?? [])],
+  }))
+}
+
+function appendLlmMetadata(readmeContent: string, evidenceHash: string, verificationPassed: boolean, unsupportedClaimCount: number): string {
+  const trimmed = readmeContent.trimEnd()
+  const markers = [
+    `<!-- ${SDX_LLM_EVIDENCE_MARKER}=${evidenceHash} -->`,
+    `<!-- ${SDX_LLM_VERIFICATION_MARKER}=${verificationPassed ? 'true' : 'false'} -->`,
+    `<!-- ${SDX_LLM_UNSUPPORTED_MARKER}=${unsupportedClaimCount} -->`,
+  ]
+  return `${trimmed}\n\n${markers.join('\n')}\n`
+}
+
+function parseLlmMetadata(readmeContent: string): {
+  evidenceHash?: string
+  verificationPassed?: boolean
+  unsupportedClaimCount?: number
+} {
+  const evidenceHash = readmeContent.match(new RegExp(`<!--\\s*${SDX_LLM_EVIDENCE_MARKER}=([a-f0-9]+)\\s*-->`, 'i'))?.[1]
+  const verificationRaw = readmeContent.match(new RegExp(`<!--\\s*${SDX_LLM_VERIFICATION_MARKER}=(true|false)\\s*-->`, 'i'))?.[1]
+  const unsupportedRaw = readmeContent.match(new RegExp(`<!--\\s*${SDX_LLM_UNSUPPORTED_MARKER}=(\\d+)\\s*-->`, 'i'))?.[1]
+
+  return {
+    evidenceHash,
+    verificationPassed: verificationRaw ? verificationRaw.toLowerCase() === 'true' : undefined,
+    unsupportedClaimCount: unsupportedRaw ? Number(unsupportedRaw) : undefined,
+  }
+}
+
+function verificationIssuesSummary(issues: VerificationIssue[]): string {
+  if (issues.length === 0) {
+    return ''
+  }
+
+  return issues.map((issue) => `- [${issue.sectionId}] ${issue.message}`).join('\n')
+}
+
 function checkFailures(
   existingContent: string,
   renderedContent: string,
@@ -2733,11 +3265,22 @@ function summarizeResult(
   missingSources: SourceRef[],
   changed: boolean,
   checkMode: boolean,
+  verificationPassed: boolean,
+  unsupportedClaimCount: number,
+  evidenceHash: string,
+  llmRunPath?: string,
 ): string {
   const lines = [`README output: ${outputPath}`]
   lines.push(`Content changed: ${changed ? 'yes' : 'no'}`)
   lines.push(`Stale sources: ${staleSources.length}`)
   lines.push(`Missing required sources: ${missingSources.length}`)
+  lines.push(`Verification passed: ${verificationPassed ? 'yes' : 'no'}`)
+  lines.push(`Unsupported claims: ${unsupportedClaimCount}`)
+  lines.push(`Evidence hash: ${evidenceHash}`)
+
+  if (llmRunPath) {
+    lines.push(`Codex run log: ${llmRunPath}`)
+  }
 
   if (staleSources.length > 0) {
     lines.push(`Stale source labels: ${staleSources.map((source) => source.label).join(', ')}`)
@@ -2767,6 +3310,8 @@ export async function generateReadme(options: GenerateReadmeOptions): Promise<Ge
 
   const {config, sourcePath} = loadReadmeConfig(cwd)
   const selectedSections = selectSections(config, includeSections, excludeSections)
+  const llmEnabled = config.llm?.enabled ?? true
+  const useDeterministic = options.deterministic === true || !llmEnabled
 
   const context = await buildReadmeContext(options.mapId, options.db, cwd, outputPath, config)
 
@@ -2866,23 +3411,169 @@ export async function generateReadme(options: GenerateReadmeOptions): Promise<Ge
   )
   context.sourceSnapshotAt = computeSnapshotTimestamp(context.sources, context.now)
 
-  const orderedSections = buildSections(context).filter((section) => selectedSections.includes(section.id))
-
   const existingContent = safeReadText(outputPath)
-  const rendered = renderReadme(orderedSections, context)
+  const orderedSections = buildSections(context).filter((section) => selectedSections.includes(section.id))
+  const evidencePack = buildEvidencePack(context, orderedSections)
+  const evidenceHash = evidenceHashForPack(evidencePack)
 
-  const {stale, missing, changed} = checkFailures(existingContent, rendered.content, rendered.sourceRefs)
+  if (useDeterministic) {
+    const rendered = renderReadme(orderedSections, context)
+    const {stale, missing, changed} = checkFailures(existingContent, rendered.content, rendered.sourceRefs)
+    const shouldWrite = writeEnabled && changed
+
+    if (shouldWrite) {
+      writeTextFile(outputPath, rendered.content)
+    }
+
+    const diff = options.dryRun || (options.check && changed)
+      ? unifiedDiff(existingContent, rendered.content, `${asRelative(outputPath, cwd)}.current`, `${asRelative(outputPath, cwd)}.next`)
+      : undefined
+
+    const checkPassed = !options.check || (stale.length === 0 && missing.length === 0 && !changed)
+
+    return {
+      outputPath,
+      sections: selectedSections,
+      stale: stale.length > 0,
+      staleSources: stale,
+      missingSources: missing,
+      changed,
+      wroteFile: shouldWrite,
+      checkPassed,
+      verificationPassed: true,
+      unsupportedClaimCount: 0,
+      evidenceHash,
+      summary: summarizeResult(outputPath, stale, missing, changed, Boolean(options.check), true, 0, evidenceHash),
+      diff,
+    }
+  }
+
+  const citationMode = config.llm?.citationMode ?? 'sentence'
+  if (citationMode !== 'sentence') {
+    throw new Error(`Unsupported llm.citationMode '${citationMode}'. Only 'sentence' is supported.`)
+  }
+
+  const failOnUngrounded = config.llm?.failOnUngrounded ?? true
+  const maxRetries = config.llm?.maxRetries ?? DEFAULT_LLM_MAX_RETRIES
+  const requiredSources = context.sources.filter((source) => source.required)
+  const stale = requiredSources.filter((source) => source.stale)
+  const missing = requiredSources.filter((source) => !source.exists)
+
+  if (options.check) {
+    const metadata = parseLlmMetadata(existingContent)
+    const validSourceIds = new Set(evidencePack.sources.map((source) => source.id))
+    const existingCitations = extractSourceCitations(existingContent)
+    const invalidCitations = existingCitations.filter((citation) => !validSourceIds.has(citation))
+    const verificationPassed =
+      metadata.verificationPassed === true &&
+      (metadata.unsupportedClaimCount ?? 1) === 0 &&
+      invalidCitations.length === 0 &&
+      existingCitations.length > 0
+    const unsupportedClaimCount = metadata.unsupportedClaimCount ?? invalidCitations.length
+    const changed = metadata.evidenceHash !== evidenceHash || !verificationPassed
+    const checkPassed = stale.length === 0 && missing.length === 0 && !changed
+
+    return {
+      outputPath,
+      sections: selectedSections,
+      stale: stale.length > 0,
+      staleSources: stale,
+      missingSources: missing,
+      changed,
+      wroteFile: false,
+      checkPassed,
+      verificationPassed,
+      unsupportedClaimCount,
+      evidenceHash,
+      summary: summarizeResult(outputPath, stale, missing, changed, true, verificationPassed, unsupportedClaimCount, evidenceHash),
+    }
+  }
+
+  const runCodex = options.codexRunner ?? runCodexPrompt
+  const codexCommand = loadConfig(cwd).codex.cmd
+  const maxAttempts = Math.max(1, maxRetries + 1)
+  let attempt = 0
+  let feedback: string | undefined
+  let previousOutput: string | undefined
+  let finalRendered: RenderOutput | undefined
+  let lastVerification: VerificationResult = {passed: false, unsupportedClaimCount: 0, issues: []}
+  let llmRunPath: string | undefined
+
+  while (attempt < maxAttempts && !finalRendered) {
+    attempt += 1
+    const prompt = createLlmReadmePrompt(evidencePack, evidenceHash, feedback, previousOutput)
+    const run = runCodex({
+      taskType: `readme-${options.mapId}`,
+      codexCommand,
+      prompt,
+      cwd,
+      metadata: {
+        mapId: options.mapId,
+        mode: 'docs_readme_llm',
+        attempt,
+        evidenceHash,
+      },
+    })
+    llmRunPath = asRelative(run.runMarkdownPath, cwd)
+
+    if (run.exitCode !== 0) {
+      feedback = `Codex exited with code ${run.exitCode}.\nStdout:\n${run.stdout}\n\nStderr:\n${run.stderr}`
+      previousOutput = run.stdout || run.stderr
+      continue
+    }
+
+    let parsed: LlmReadmeResponse
+    try {
+      parsed = parseLlmReadmeResponse(run.stdout, selectedSections)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      feedback = `Output parsing failed: ${message}`
+      previousOutput = run.stdout
+      continue
+    }
+
+    const llmSections = buildSectionsFromLlmResponse(orderedSections, parsed)
+    const verification = verifyLlmReadme(llmSections, evidencePack, failOnUngrounded)
+    lastVerification = verification
+
+    if (!verification.passed) {
+      feedback = `Output verification failed. Fix every issue:\n${verificationIssuesSummary(verification.issues)}`
+      previousOutput = run.stdout
+      continue
+    }
+
+    const rendered = renderReadme(llmSections, context)
+    finalRendered = {
+      ...rendered,
+      content: appendLlmMetadata(rendered.content, evidenceHash, true, verification.unsupportedClaimCount),
+    }
+  }
+
+  if (!finalRendered) {
+    const summary = verificationIssuesSummary(lastVerification.issues)
+    throw new Error(
+      [
+        `Codex README generation failed after ${maxAttempts} attempt(s).`,
+        summary.length > 0 ? `Verification issues:\n${summary}` : 'No valid LLM output was produced.',
+        llmRunPath ? `Last run log: ${llmRunPath}` : undefined,
+      ]
+        .filter((line) => Boolean(line))
+        .join('\n\n'),
+    )
+  }
+
+  const changed = existingContent !== finalRendered.content
   const shouldWrite = writeEnabled && changed
 
   if (shouldWrite) {
-    writeTextFile(outputPath, rendered.content)
+    writeTextFile(outputPath, finalRendered.content)
   }
 
-  const diff = options.dryRun || (options.check && changed)
-    ? unifiedDiff(existingContent, rendered.content, `${asRelative(outputPath, cwd)}.current`, `${asRelative(outputPath, cwd)}.next`)
+  const diff = options.dryRun
+    ? unifiedDiff(existingContent, finalRendered.content, `${asRelative(outputPath, cwd)}.current`, `${asRelative(outputPath, cwd)}.next`)
     : undefined
 
-  const checkPassed = !options.check || (stale.length === 0 && missing.length === 0 && !changed)
+  const checkPassed = stale.length === 0 && missing.length === 0 && lastVerification.passed
 
   return {
     outputPath,
@@ -2893,7 +3584,21 @@ export async function generateReadme(options: GenerateReadmeOptions): Promise<Ge
     changed,
     wroteFile: shouldWrite,
     checkPassed,
-    summary: summarizeResult(outputPath, stale, missing, changed, Boolean(options.check)),
+    verificationPassed: lastVerification.passed,
+    unsupportedClaimCount: lastVerification.unsupportedClaimCount,
+    evidenceHash,
+    llmRunPath,
+    summary: summarizeResult(
+      outputPath,
+      stale,
+      missing,
+      changed,
+      Boolean(options.check),
+      lastVerification.passed,
+      lastVerification.unsupportedClaimCount,
+      evidenceHash,
+      llmRunPath,
+    ),
     diff,
   }
 }

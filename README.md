@@ -242,21 +242,26 @@ What `docs readme` now does:
 - traverses repository docs **and source code** across repos in map scope,
 - consumes flow graph/journey findings for endpoint-level critical paths and known unknowns,
 - infers service purpose, interfaces, async behavior, deployment cues, and operating notes,
-- combines that with map/contracts/architecture artifacts,
+- combines that with map/contracts/architecture artifacts into an evidence pack,
+- runs Codex as the default README author with hard citation/grounding verification,
 - writes a clean narrative README (no SDX section marker blocks in output).
 
 For best results:
 - register local clones for repos you care about (`repo add`) so SDX can deeply scan docs,
-- set `GITHUB_TOKEN` to let SDX fetch Markdown docs for repos without local clones.
+- set `GITHUB_TOKEN` to let SDX fetch Markdown docs for repos without local clones,
+- ensure `codex` CLI is installed and authenticated for non-interactive use.
 
 ```bash
 # generate/update root README.md
 ./scripts/sdx docs readme --map platform-core
 
+# deterministic fallback (bypass Codex LLM authoring)
+./scripts/sdx docs readme --map platform-core --deterministic
+
 # write to a different output file
 ./scripts/sdx docs readme --map platform-core --output ARCHITECTURE.md
 
-# check mode for CI (non-zero on stale/missing required artifacts or README drift)
+# check mode for CI (non-zero on stale/missing sources, citation issues, or evidence hash drift)
 ./scripts/sdx docs readme --map platform-core --check
 
 # dry-run preview with unified diff + readiness summary
@@ -298,12 +303,14 @@ Config capabilities:
 - diagram behavior (`diagram.autoGenerateMissing`, `diagram.includeC4Links`)
 - custom intro text (`customIntro`)
 - stale threshold override in hours (`staleThresholdHours`, default `72`)
+- llm mode controls (`llm.enabled`, `llm.maxRetries`, `llm.failOnUngrounded`, `llm.citationMode`)
 
 CI automation example:
 - copy [`docs/examples/readme-refresh.yml`](./docs/examples/readme-refresh.yml) into your consumer workspace repo under `.github/workflows/`.
 - set repo/org variables:
   - `SDX_ORG` (required)
   - `SDX_MAP` (optional, defaults to `all-services` in the workflow)
+  - `CODEX_CMD` (optional, defaults to `codex`)
 - the workflow runs `repo sync`, `map build`, `contracts extract`, `flow discover`, `flow validate`, `flow check`, `docs generate`, and `docs readme`, then opens a PR.
 
 ## Cross-Repo Tech-Lead PRs (Spec-System Native)
