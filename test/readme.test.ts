@@ -275,6 +275,23 @@ describe('docs readme generator', () => {
     context.db.close()
   })
 
+  it('fails check mode when required flow artifacts are missing', async () => {
+    const root = mkTempDir()
+    const context = setupWorkspaceWithMap(root)
+
+    const checked = await generateReadme({
+      mapId: 'platform-core',
+      db: context.db,
+      cwd: root,
+      check: true,
+    })
+
+    expect(checked.checkPassed).toBe(false)
+    expect(checked.missingSources.some((source) => source.label === 'Flow graph')).toBe(true)
+
+    context.db.close()
+  })
+
   it('supports dry-run without writing files and emits unified diff', async () => {
     const root = mkTempDir()
     const context = setupWorkspaceWithMap(root)
