@@ -31,8 +31,10 @@ export default class StatusCommand extends Command {
       const hasScope = fileExists(path.join(mapDir, 'scope.json'))
       const hasServiceMap = fileExists(path.join(mapDir, 'service-map.json'))
       const hasArchitectureModel = fileExists(path.join(mapDir, 'architecture', 'model.json'))
+      const hasFlowGraph = fileExists(path.join(mapDir, 'flow', 'graph.json'))
+      const hasFlowValidation = fileExists(path.join(mapDir, 'flow', 'validation.json'))
       this.log(
-        `- ${mapId}: scope=${hasScope ? 'yes' : 'no'}, service-map=${hasServiceMap ? 'yes' : 'no'}, architecture=${hasArchitectureModel ? 'yes' : 'no'}`,
+        `- ${mapId}: scope=${hasScope ? 'yes' : 'no'}, service-map=${hasServiceMap ? 'yes' : 'no'}, architecture=${hasArchitectureModel ? 'yes' : 'no'}, flow=${hasFlowGraph ? 'yes' : 'no'}, flow-validation=${hasFlowValidation ? 'yes' : 'no'}`,
       )
     }
 

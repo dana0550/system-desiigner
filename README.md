@@ -19,6 +19,7 @@
 <p align="center">
   <a href="#install-from-npm">Install from npm</a> •
   <a href="#one-command-setup">One-Command Setup</a> •
+  <a href="#flow-intelligence-endpoint-level">Flow Intelligence</a> •
   <a href="#architecture-pack-org--service-deep-dives">Architecture Pack</a> •
   <a href="#canonical-root-readme-generation">Canonical README</a> •
   <a href="#daily-workflow">Daily Workflow</a> •
@@ -31,6 +32,7 @@ SDX gives your team a single architecture workspace that sits above service repo
 
 You use it to:
 - map services across repos,
+- build endpoint-level flow intelligence from source + runtime traces,
 - track contracts,
 - review new service plans,
 - draft cross-team integration handoffs,
@@ -132,10 +134,66 @@ From your SDX workspace root:
 ./scripts/sdx map build platform-core
 
 ./scripts/sdx contracts extract --map platform-core
+./scripts/sdx flow discover --map platform-core
+./scripts/sdx flow validate --map platform-core
+./scripts/sdx flow diagram --map platform-core
+./scripts/sdx flow check --map platform-core
 ./scripts/sdx docs generate --map platform-core
 ./scripts/sdx architecture generate --map platform-core
 ./scripts/sdx docs readme --map platform-core
 ```
+
+### Flow Intelligence (Endpoint-Level)
+Build real call-chain diagrams and findings from static code traversal plus optional OTel runtime exports.
+
+```bash
+# discover and write flow graph artifacts
+./scripts/sdx flow discover --map platform-core
+
+# limit runtime evidence to one env
+./scripts/sdx flow discover --map platform-core --env prod
+
+# validate quality/integrity
+./scripts/sdx flow validate --map platform-core
+
+# CI-safe drift gate (non-zero on risk-based failures)
+./scripts/sdx flow check --map platform-core
+
+# generate endpoint/client/event/journey diagrams
+./scripts/sdx flow diagram --map platform-core
+./scripts/sdx flow diagram --map platform-core --journey "Top request path from web-app"
+```
+
+Generated flow artifacts:
+- `maps/<map-id>/flow/graph.json`
+- `maps/<map-id>/flow/endpoints.json`
+- `maps/<map-id>/flow/findings.json`
+- `maps/<map-id>/flow/journeys.json`
+- `maps/<map-id>/flow/validation.json`
+- `maps/<map-id>/flow/check.json`
+
+Generated flow diagrams:
+- `docs/architecture/<map-id>/diagrams/flow/endpoint-communication.mmd`
+- `docs/architecture/<map-id>/diagrams/flow/client-backend-flow.mmd`
+- `docs/architecture/<map-id>/diagrams/flow/event-data-lineage.mmd`
+- `docs/architecture/<map-id>/diagrams/flow/journey-*.mmd`
+
+Flow config files:
+- `.sdx/flow.config.json`
+- `.sdx/flow.config.yaml`
+- `.sdx/flow.config.yml`
+
+`flow.config` supports:
+- endpoint include/exclude patterns
+- service alias mapping
+- ownership overrides
+- ignored endpoint/findings rules
+- runtime stale threshold + env path overrides
+- manual journeys (`journeys[]`) with auto fallback ranking
+
+Important defaults:
+- local repo clones are required for high-quality flow discovery (`repo add --path ...`).
+- runtime evidence is read from `runtime/otel/<map-id>/{dev,staging,prod}` unless overridden.
 
 For planning and rollout:
 
@@ -182,6 +240,7 @@ Generate a complete root `README.md` as the canonical onboarding and architectur
 
 What `docs readme` now does:
 - traverses repository docs **and source code** across repos in map scope,
+- consumes flow graph/journey findings for endpoint-level critical paths and known unknowns,
 - infers service purpose, interfaces, async behavior, deployment cues, and operating notes,
 - combines that with map/contracts/architecture artifacts,
 - writes a clean narrative README (no SDX section marker blocks in output).
@@ -245,7 +304,7 @@ CI automation example:
 - set repo/org variables:
   - `SDX_ORG` (required)
   - `SDX_MAP` (optional, defaults to `all-services` in the workflow)
-- the workflow runs `repo sync`, `map build`, `contracts extract`, `docs generate`, and `docs readme`, then opens a PR.
+- the workflow runs `repo sync`, `map build`, `contracts extract`, `flow discover`, `flow validate`, `flow check`, `docs generate`, and `docs readme`, then opens a PR.
 
 ## Cross-Repo Tech-Lead PRs (Spec-System Native)
 Use this flow when SDX should create real `CC-*` contract-change PRs in downstream repos that have spec-system initialized.

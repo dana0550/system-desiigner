@@ -8,6 +8,7 @@ import {loadConfig} from './config'
 import {SCHEMA_VERSION} from './constants'
 import {extractContracts} from './contracts'
 import {listFilesRecursive} from './fileScan'
+import {discoverFlow, generateFlowDiagrams, loadFlowArtifacts} from './flow'
 import {fileExists, readJsonFile, safeReadText, writeTextFile} from './fs'
 import {fetchRepositoryMarkdownDocs} from './github'
 import {buildServiceMapArtifact} from './mapBuilder'
@@ -17,6 +18,9 @@ import {
   ArchitectureEdge,
   ArchitectureModelArtifact,
   ContractRecord,
+  FlowFindingsArtifact,
+  FlowGraphArtifact,
+  FlowJourneysArtifact,
   RepoRecord,
   ScopeManifest,
   ServiceMapArtifact,
@@ -137,6 +141,9 @@ interface DiagramPaths {
   systemContext: string
   serviceDependency: string
   sequence: string
+  flowEndpointCommunication: string
+  flowClientBackend: string
+  flowEventLineage: string
   optionalSystemLandscape: string
   optionalContainer: string
   optionalArchitectureIndex: string
@@ -221,6 +228,9 @@ interface ReadmeContext {
   config: ReadmeConfig
   sourceSnapshotAt: string
   coreRequestPath: ArchitectureEdge[]
+  flowGraph?: FlowGraphArtifact
+  flowFindings?: FlowFindingsArtifact
+  flowJourneys?: FlowJourneysArtifact
   sourceRepoSyncAt?: string
   repoInsights: Map<string, RepoDocInsights>
 }
@@ -1133,11 +1143,15 @@ function loadArchitectureModel(mapId: string, db: Database.Database, cwd: string
 
 function diagramPaths(mapId: string, cwd: string): DiagramPaths {
   const baseDir = path.join(cwd, 'docs', 'architecture', mapId, 'diagrams')
+  const flowDir = path.join(baseDir, 'flow')
   return {
     baseDir,
     systemContext: path.join(baseDir, 'system-context.mmd'),
     serviceDependency: path.join(baseDir, 'service-dependency.mmd'),
     sequence: path.join(baseDir, 'core-request-flow.mmd'),
+    flowEndpointCommunication: path.join(flowDir, 'endpoint-communication.mmd'),
+    flowClientBackend: path.join(flowDir, 'client-backend-flow.mmd'),
+    flowEventLineage: path.join(flowDir, 'event-data-lineage.mmd'),
     optionalSystemLandscape: path.join(baseDir, 'system-landscape.mmd'),
     optionalContainer: path.join(baseDir, 'container-communication.mmd'),
     optionalArchitectureIndex: path.join(cwd, 'docs', 'architecture', mapId, 'index.md'),
@@ -1435,6 +1449,56 @@ function ensureRequiredDiagrams(
       'diagram-c4-container',
       'Optional C4 container communication',
       context.diagrams.optionalContainer,
+      cwd,
+      threshold,
+      context.now,
+      false,
+    ),
+  )
+  if (writeEnabled && autoGenerateMissing) {
+    const flowMissing =
+      !fileExists(context.diagrams.flowEndpointCommunication) ||
+      !fileExists(context.diagrams.flowClientBackend) ||
+      !fileExists(context.diagrams.flowEventLineage)
+
+    if (flowMissing) {
+      try {
+        generateFlowDiagrams({
+          mapId: context.mapId,
+          cwd,
+        })
+      } catch {
+        // Flow diagrams require flow artifacts; fallback handled in section rendering.
+      }
+    }
+  }
+  refs.push(
+    sourceFromFile(
+      'diagram-flow-endpoint-communication',
+      'Flow endpoint communication diagram',
+      context.diagrams.flowEndpointCommunication,
+      cwd,
+      threshold,
+      context.now,
+      false,
+    ),
+  )
+  refs.push(
+    sourceFromFile(
+      'diagram-flow-client-backend',
+      'Flow client/backend diagram',
+      context.diagrams.flowClientBackend,
+      cwd,
+      threshold,
+      context.now,
+      false,
+    ),
+  )
+  refs.push(
+    sourceFromFile(
+      'diagram-flow-event-lineage',
+      'Flow event/data lineage diagram',
+      context.diagrams.flowEventLineage,
       cwd,
       threshold,
       context.now,
@@ -1797,6 +1861,88 @@ function serviceCatalog(context: ReadmeContext): ServiceCatalogRow[] {
   })
 }
 
+function topFlowJourney(context: ReadmeContext): {
+  name: string
+  score: number
+  steps: Array<{
+    from: string
+    to: string
+    type: string
+    protocol: string
+    auth: string
+    piiTags: string[]
+    schemaRef?: string
+    lastSeenProd?: string
+  }>
+} | null {
+  if (!context.flowGraph || !context.flowJourneys || context.flowJourneys.journeys.length === 0) {
+    return null
+  }
+
+  const journey = [...context.flowJourneys.journeys]
+    .sort((a, b) => {
+      const scoreDelta = b.score - a.score
+      if (scoreDelta !== 0) {
+        return scoreDelta
+      }
+      return a.name.localeCompare(b.name)
+    })[0]
+
+  if (!journey) {
+    return null
+  }
+
+  const edgeById = new Map(context.flowGraph.edges.map((edge) => [edge.id, edge]))
+  const steps = journey.edgeIds
+    .map((edgeId) => edgeById.get(edgeId))
+    .filter((edge): edge is NonNullable<typeof edge> => Boolean(edge))
+    .map((edge) => ({
+      from: edge.from.replace(/^(service|client|endpoint|external|event_bus|datastore):/, ''),
+      to: edge.to.replace(/^(service|client|endpoint|external|event_bus|datastore):/, ''),
+      type: edge.type,
+      protocol: edge.protocol,
+      auth: edge.auth,
+      piiTags: edge.piiTags,
+      schemaRef: edge.payloadSchemaRef,
+      lastSeenProd: edge.lastSeenByEnv.prod,
+    }))
+
+  if (steps.length === 0) {
+    return null
+  }
+
+  return {
+    name: journey.name,
+    score: journey.score,
+    steps,
+  }
+}
+
+function knownUnknowns(context: ReadmeContext): string[] {
+  if (!context.flowFindings) {
+    return ['- Flow graph findings are unavailable. Run `./scripts/sdx flow discover --map <map-id>`.']
+  }
+
+  const priorityCodes = new Set(['unresolved_base_url', 'unknown_endpoint_ownership', 'contract_mismatch'])
+  const prioritized = context.flowFindings.findings
+    .filter((finding) => priorityCodes.has(finding.code))
+    .sort((a, b) => {
+      const severityDelta = a.severity.localeCompare(b.severity)
+      if (severityDelta !== 0) {
+        return severityDelta
+      }
+      return a.message.localeCompare(b.message)
+    })
+    .slice(0, 10)
+    .map((finding) => `- ${finding.message}`)
+
+  if (prioritized.length > 0) {
+    return prioritized
+  }
+
+  return ['- None identified in current flow findings.']
+}
+
 function sectionAnchor(title: string): string {
   return title
     .toLowerCase()
@@ -1968,6 +2114,7 @@ async function buildReadmeContext(
   const serviceMap = loadServiceMap(mapId, scope, repoMap, mapDir)
   const contracts = loadContracts(mapId, scope, repoMap, mapDir)
   const model = loadArchitectureModel(mapId, db, cwd)
+  const flowArtifacts = loadFlowArtifacts(mapId, cwd)
   const diagrams = diagramPaths(mapId, cwd)
 
   const sourceRefs: SourceRef[] = []
@@ -2013,6 +2160,39 @@ async function buildReadmeContext(
       false,
     ),
   )
+  sourceRefs.push(
+    sourceFromFile(
+      'flow-graph',
+      'Flow graph',
+      path.join(cwd, 'maps', mapId, 'flow', 'graph.json'),
+      cwd,
+      threshold,
+      now,
+      true,
+    ),
+  )
+  sourceRefs.push(
+    sourceFromFile(
+      'flow-findings',
+      'Flow findings',
+      path.join(cwd, 'maps', mapId, 'flow', 'findings.json'),
+      cwd,
+      threshold,
+      now,
+      true,
+    ),
+  )
+  sourceRefs.push(
+    sourceFromFile(
+      'flow-journeys',
+      'Flow journeys',
+      path.join(cwd, 'maps', mapId, 'flow', 'journeys.json'),
+      cwd,
+      threshold,
+      now,
+      true,
+    ),
+  )
   sourceRefs.push(sourceFromRepoSync(repos, selectedRepos, threshold, now))
 
   let githubToken: string | undefined
@@ -2043,6 +2223,9 @@ async function buildReadmeContext(
     config,
     sourceSnapshotAt: computeSnapshotTimestamp(sourceRefs, now),
     coreRequestPath: findCoreRequestPath(model, serviceMap),
+    flowGraph: flowArtifacts.graph,
+    flowFindings: flowArtifacts.findings,
+    flowJourneys: flowArtifacts.journeys,
     sourceRepoSyncAt: sourceRefs.find((source) => source.id === 'repo-sync')?.generatedAt,
     repoInsights,
   }
@@ -2055,6 +2238,9 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
     systemContext: toLinkPath(context.diagrams.systemContext, outputPath),
     serviceDependency: toLinkPath(context.diagrams.serviceDependency, outputPath),
     sequence: toLinkPath(context.diagrams.sequence, outputPath),
+    flowEndpointCommunication: toLinkPath(context.diagrams.flowEndpointCommunication, outputPath),
+    flowClientBackend: toLinkPath(context.diagrams.flowClientBackend, outputPath),
+    flowEventLineage: toLinkPath(context.diagrams.flowEventLineage, outputPath),
     optionalSystemLandscape: toLinkPath(context.diagrams.optionalSystemLandscape, outputPath),
     optionalContainer: toLinkPath(context.diagrams.optionalContainer, outputPath),
     optionalArchitectureIndex: toLinkPath(context.diagrams.optionalArchitectureIndex, outputPath),
@@ -2082,8 +2268,13 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
     .slice(0, 8)
     .map((entry) => `- **${entry.repoName}**: ${shorten(entry.insights.summary, 220)}`)
 
-  const coreFlowLines =
-    context.coreRequestPath.length > 0
+  const topJourney = topFlowJourney(context)
+  const coreFlowLines = topJourney
+    ? topJourney.steps.map(
+        (step) =>
+          `- ${step.from} -> ${step.to} (${step.type}, ${step.protocol}, auth=${step.auth}, data_class=${step.piiTags.length > 0 ? step.piiTags.join('+') : 'Unknown'}, contract=${step.schemaRef ?? 'Unknown'}, prod_last_seen=${step.lastSeenProd ?? 'Unknown'})`,
+      )
+    : context.coreRequestPath.length > 0
       ? context.coreRequestPath.map((edge) => {
           const from = edge.from.replace('service:', '')
           const to = edge.to.replace('service:', '')
@@ -2091,10 +2282,12 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
         })
       : ['- Unknown']
 
-  const coreFlowServices = topUnique(
-    context.coreRequestPath.flatMap((edge) => [edge.from.replace('service:', ''), edge.to.replace('service:', '')]),
-    8,
-  )
+  const coreFlowServices = topJourney
+    ? topUnique(topJourney.steps.flatMap((step) => [step.from, step.to]), 10)
+    : topUnique(
+        context.coreRequestPath.flatMap((edge) => [edge.from.replace('service:', ''), edge.to.replace('service:', '')]),
+        8,
+      )
   const coreFlowNotes = coreFlowServices.map((serviceId) => {
     const insights = insightsForRepo(serviceId, context)
     const line = insights.responsibilities[0] ?? insights.interfaces[0] ?? insights.summary
@@ -2120,6 +2313,7 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
     ),
     10,
   )
+  const unknownFlowHighlights = knownUnknowns(context)
 
   const runbookHighlights = topUnique(
     allInsights.flatMap((entry) =>
@@ -2239,6 +2433,9 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
           `- [System context diagram](${links.systemContext})`,
           `- [Service dependency graph](${links.serviceDependency})`,
           `- [Core request flow sequence](${links.sequence})`,
+          `- [Endpoint communication graph](${links.flowEndpointCommunication})`,
+          `- [Client to backend flow graph](${links.flowClientBackend})`,
+          `- [Event and data lineage graph](${links.flowEventLineage})`,
           fileExists(context.diagrams.optionalArchitectureIndex)
             ? `- [Architecture pack index](${links.optionalArchitectureIndex})`
             : '- Architecture pack index: Not available',
@@ -2260,6 +2457,9 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
         if (coreFlowLines.length > 0) {
           lines.push('')
           lines.push('### Primary request path')
+          if (topJourney) {
+            lines.push(`- Journey: ${topJourney.name} (score ${topJourney.score})`)
+          }
           lines.push(...coreFlowLines)
         }
 
@@ -2271,6 +2471,11 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
         'diagram-system-context',
         'diagram-service-dependency',
         'diagram-core-sequence',
+        'diagram-flow-endpoint-communication',
+        'diagram-flow-client-backend',
+        'diagram-flow-event-lineage',
+        'flow-graph',
+        'flow-journeys',
         'diagram-c4-landscape',
         'diagram-c4-container',
       ],
@@ -2301,18 +2506,35 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
       title: SECTION_TITLES['critical_flows'],
       body: [
         `- Primary sequence diagram: [core-request-flow.mmd](${links.sequence})`,
+        `- Endpoint communication graph: [endpoint-communication.mmd](${links.flowEndpointCommunication})`,
+        `- Client/backend flow graph: [client-backend-flow.mmd](${links.flowClientBackend})`,
         '- Current highest-confidence request chain:',
         ...coreFlowLines,
         '',
         '### Service responsibilities in this flow',
         ...(coreFlowNotes.length > 0 ? coreFlowNotes : ['- Unknown']),
+        '',
+        '### Known unknowns',
+        ...unknownFlowHighlights,
       ],
-      sourceIds: ['architecture-model', 'service-map-json', 'docs-dependencies', 'diagram-core-sequence'],
+      sourceIds: [
+        'architecture-model',
+        'service-map-json',
+        'docs-dependencies',
+        'diagram-core-sequence',
+        'diagram-flow-endpoint-communication',
+        'diagram-flow-client-backend',
+        'flow-graph',
+        'flow-findings',
+        'flow-journeys',
+      ],
     },
     event_async_topology: {
       id: 'event_async_topology',
       title: SECTION_TITLES['event_async_topology'],
       body: [
+        `- Event/data lineage diagram: [event-data-lineage.mmd](${links.flowEventLineage})`,
+        '',
         '| Contract | Repository | Version | Compatibility | Producers | Consumers |',
         '|---|---|---|---|---|---|',
         ...(asyncContracts.length > 0
@@ -2328,7 +2550,7 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
         '### Detected event signals in code',
         ...(codeEventHighlights.length > 0 ? codeEventHighlights : ['- Unknown']),
       ],
-      sourceIds: ['contracts-json', 'architecture-model'],
+      sourceIds: ['contracts-json', 'architecture-model', 'flow-graph', 'diagram-flow-event-lineage'],
     },
     contracts_index: {
       id: 'contracts_index',
@@ -2408,6 +2630,8 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
         `./scripts/sdx repo sync --org ${context.scope.org}`,
         `./scripts/sdx map build ${context.mapId}`,
         `./scripts/sdx contracts extract --map ${context.mapId}`,
+        `./scripts/sdx flow discover --map ${context.mapId}`,
+        `./scripts/sdx flow validate --map ${context.mapId}`,
         `./scripts/sdx architecture generate --map ${context.mapId}`,
         `./scripts/sdx docs readme --map ${context.mapId}`,
         '```',
@@ -2454,6 +2678,7 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
         `- Map: ${context.mapId}`,
         `- Tooling: SDX CLI ${getCliPackageVersion()} (schema ${SCHEMA_VERSION})`,
         '- Run `./scripts/sdx docs readme --map <map-id> --check` in CI to verify freshness and drift.',
+        '- Run `./scripts/sdx flow check --map <map-id>` in CI to verify flow drift and evidence integrity.',
       ],
       sourceIds: context.sources.map((source) => source.id),
     },
@@ -2552,6 +2777,55 @@ export async function generateReadme(options: GenerateReadmeOptions): Promise<Ge
   }
 
   const writeEnabled = !options.check && !options.dryRun
+  if (writeEnabled && !context.flowGraph) {
+    const discovered = discoverFlow({
+      mapId: options.mapId,
+      db: options.db,
+      cwd,
+      env: 'all',
+      dryRun: false,
+    })
+    context.flowGraph = discovered.graph
+    context.flowFindings = discovered.findings
+    context.flowJourneys = discovered.journeys
+
+    upsertSourceRef(
+      context.sources,
+      sourceFromFile('flow-graph', 'Flow graph', path.join(cwd, 'maps', options.mapId, 'flow', 'graph.json'), cwd, context.staleThresholdHours, context.now, true),
+    )
+    upsertSourceRef(
+      context.sources,
+      sourceFromFile(
+        'flow-findings',
+        'Flow findings',
+        path.join(cwd, 'maps', options.mapId, 'flow', 'findings.json'),
+        cwd,
+        context.staleThresholdHours,
+        context.now,
+        true,
+      ),
+    )
+    upsertSourceRef(
+      context.sources,
+      sourceFromFile(
+        'flow-journeys',
+        'Flow journeys',
+        path.join(cwd, 'maps', options.mapId, 'flow', 'journeys.json'),
+        cwd,
+        context.staleThresholdHours,
+        context.now,
+        true,
+      ),
+    )
+    try {
+      generateFlowDiagrams({
+        mapId: options.mapId,
+        cwd,
+      })
+    } catch {
+      // Continue with README generation even when diagram emission fails.
+    }
+  }
   const diagramResult = ensureRequiredDiagrams(context, options.db, cwd, writeEnabled)
   context.sources.push(...diagramResult.diagramSources)
   upsertSourceRef(

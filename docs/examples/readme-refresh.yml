@@ -30,6 +30,9 @@ jobs:
           ./scripts/sdx repo sync --org "${SDX_ORG}"
           ./scripts/sdx map build "${SDX_MAP}"
           ./scripts/sdx contracts extract --map "${SDX_MAP}"
+          ./scripts/sdx flow discover --map "${SDX_MAP}"
+          ./scripts/sdx flow validate --map "${SDX_MAP}"
+          ./scripts/sdx flow check --map "${SDX_MAP}"
           ./scripts/sdx docs generate --map "${SDX_MAP}"
           ./scripts/sdx docs readme --map "${SDX_MAP}"
 
@@ -42,6 +45,9 @@ jobs:
             - repo sync
             - map build
             - contracts extract
+            - flow discover
+            - flow validate
+            - flow check
             - docs generate
             - docs readme
           branch: chore/sdx-readme-refresh

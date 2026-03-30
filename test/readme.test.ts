@@ -182,9 +182,11 @@ describe('docs readme generator', () => {
     expect(readme).toContain('Service purpose highlights')
     expect(readme).toContain('API Service handles account and billing API requests for the platform.')
     expect(readme).toContain('[System context diagram](./docs/architecture/platform-core/diagrams/system-context.mmd)')
+    expect(readme).toContain('[Endpoint communication graph](./docs/architecture/platform-core/diagrams/flow/endpoint-communication.mmd)')
     expect(readme).toContain('### Service deep dives')
     expect(readme).toContain('GET /v1/accounts')
     expect(readme).toContain('billing.updated')
+    expect(readme).toContain('### Known unknowns')
     expect(readme).not.toContain('<!-- SDX:SECTION:')
 
     const second = await generateReadme({
@@ -269,6 +271,23 @@ describe('docs readme generator', () => {
 
     expect(checked.checkPassed).toBe(false)
     expect(checked.staleSources.length).toBeGreaterThan(0)
+
+    context.db.close()
+  })
+
+  it('fails check mode when required flow artifacts are missing', async () => {
+    const root = mkTempDir()
+    const context = setupWorkspaceWithMap(root)
+
+    const checked = await generateReadme({
+      mapId: 'platform-core',
+      db: context.db,
+      cwd: root,
+      check: true,
+    })
+
+    expect(checked.checkPassed).toBe(false)
+    expect(checked.missingSources.some((source) => source.label === 'Flow graph')).toBe(true)
 
     context.db.close()
   })

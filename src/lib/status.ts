@@ -12,6 +12,8 @@ export interface StatusSummary {
     mapId: string
     hasScope: boolean
     hasServiceMap: boolean
+    hasFlowGraph: boolean
+    hasFlowValidation: boolean
     updatedAt?: string
   }>
 }
@@ -32,6 +34,8 @@ export function getStatusSummary(db: Database.Database, cwd = process.cwd()): St
       mapId: map_id,
       hasScope: fileExists(scopePath),
       hasServiceMap: fileExists(path.join(mapDir, 'service-map.json')),
+      hasFlowGraph: fileExists(path.join(mapDir, 'flow', 'graph.json')),
+      hasFlowValidation: fileExists(path.join(mapDir, 'flow', 'validation.json')),
       updatedAt,
     }
   })
