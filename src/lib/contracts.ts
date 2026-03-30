@@ -11,6 +11,7 @@ const PATTERNS: Array<{type: ContractRecord['type']; regex: RegExp}> = [
   {type: 'graphql', regex: /\.(graphql|gql)$/i},
   {type: 'proto', regex: /\.proto$/i},
   {type: 'asyncapi', regex: /asyncapi.*\.(ya?ml|json)$/i},
+  {type: 'markdown', regex: /(^|\/)docs\/contracts\/.+\.mdx?$/i},
 ]
 
 function detectType(filePath: string): ContractRecord['type'] | null {
