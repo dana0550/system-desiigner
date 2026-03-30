@@ -4,9 +4,12 @@ import Database from 'better-sqlite3'
 import YAML from 'yaml'
 import {z} from 'zod'
 import {generateArchitecturePack, buildArchitectureModel} from './architecture'
+import {loadConfig} from './config'
 import {SCHEMA_VERSION} from './constants'
 import {extractContracts} from './contracts'
+import {listFilesRecursive} from './fileScan'
 import {fileExists, readJsonFile, safeReadText, writeTextFile} from './fs'
+import {fetchRepositoryMarkdownDocs} from './github'
 import {buildServiceMapArtifact} from './mapBuilder'
 import {listAllRepos} from './repoRegistry'
 import {loadScopeManifest} from './scope'
@@ -152,6 +155,43 @@ interface ServiceCatalogRow {
   status: string
 }
 
+interface RepoDocFile {
+  path: string
+  body: string
+  source: 'local' | 'remote'
+  referenceUrl?: string
+}
+
+interface RepoDocInsights {
+  summary: string
+  responsibilities: string[]
+  interfaces: string[]
+  asyncPatterns: string[]
+  deployment: string[]
+  runbooks: string[]
+  localDevelopment: string[]
+  security: string[]
+  adrs: string[]
+  dataStores: string[]
+  glossary: string[]
+  docReferences: string[]
+}
+
+const EMPTY_REPO_INSIGHTS: RepoDocInsights = {
+  summary: 'Unknown',
+  responsibilities: [],
+  interfaces: [],
+  asyncPatterns: [],
+  deployment: [],
+  runbooks: [],
+  localDevelopment: [],
+  security: [],
+  adrs: [],
+  dataStores: [],
+  glossary: [],
+  docReferences: [],
+}
+
 interface ReadmeContext {
   cwd: string
   mapId: string
@@ -170,6 +210,7 @@ interface ReadmeContext {
   sourceSnapshotAt: string
   coreRequestPath: ArchitectureEdge[]
   sourceRepoSyncAt?: string
+  repoInsights: Map<string, RepoDocInsights>
 }
 
 interface SectionPayload {
@@ -441,6 +482,323 @@ function computeSnapshotTimestamp(sources: SourceRef[], fallback: Date): string 
   }
 
   return sourceCandidates.reduce((latest, candidate) => (candidate.getTime() > latest.getTime() ? candidate : latest), sourceCandidates[0]).toISOString()
+}
+
+function markdownPriority(filePath: string): number {
+  const lower = filePath.toLowerCase()
+  if (lower === 'readme.md' || lower.endsWith('/readme.md')) {
+    return 0
+  }
+
+  if (lower.includes('/docs/architecture/') || lower.includes('/architecture/')) {
+    return 1
+  }
+
+  if (lower.includes('/docs/api/') || lower.includes('/api/')) {
+    return 2
+  }
+
+  if (lower.includes('/docs/')) {
+    return 3
+  }
+
+  return 4
+}
+
+function parseOwnerRepo(fullName?: string): {owner: string; repo: string} | null {
+  if (!fullName) {
+    return null
+  }
+
+  const parts = fullName.split('/').map((part) => part.trim()).filter((part) => part.length > 0)
+  if (parts.length !== 2) {
+    return null
+  }
+
+  return {owner: parts[0], repo: parts[1]}
+}
+
+function normalizeMarkdown(input: string): string {
+  return input
+    .replace(/\r\n/g, '\n')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
+    .replace(/[#>*_~\-]{1,}/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function splitSentences(input: string): string[] {
+  const cleaned = normalizeMarkdown(input)
+  if (cleaned.length === 0) {
+    return []
+  }
+
+  return cleaned
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length >= 20)
+}
+
+function markdownSections(content: string): Array<{heading: string; body: string}> {
+  const lines = content.replace(/\r\n/g, '\n').split('\n')
+  const out: Array<{heading: string; body: string}> = []
+  let currentHeading = 'root'
+  let buffer: string[] = []
+
+  function flush(): void {
+    const body = buffer.join('\n').trim()
+    if (body.length > 0) {
+      out.push({heading: currentHeading, body})
+    }
+    buffer = []
+  }
+
+  for (const line of lines) {
+    const match = line.match(/^#{1,6}\s+(.+)$/)
+    if (match) {
+      flush()
+      currentHeading = match[1].trim().toLowerCase()
+      continue
+    }
+
+    buffer.push(line)
+  }
+
+  flush()
+  return out
+}
+
+function firstParagraph(content: string): string | undefined {
+  const paragraphs = content
+    .replace(/\r\n/g, '\n')
+    .split(/\n\s*\n/)
+    .map((chunk) => normalizeMarkdown(chunk))
+    .filter((chunk) => chunk.length >= 20)
+
+  return paragraphs[0]
+}
+
+function topUnique(values: string[], limit: number): string[] {
+  const out: string[] = []
+  for (const value of values) {
+    if (out.includes(value)) {
+      continue
+    }
+
+    out.push(value)
+    if (out.length >= limit) {
+      break
+    }
+  }
+  return out
+}
+
+function collectLocalMarkdownDocs(repo: RepoRecord, maxFiles = 180, maxChars = 180_000): RepoDocFile[] {
+  if (!repo.localPath || !fileExists(repo.localPath)) {
+    return []
+  }
+
+  const candidates = listFilesRecursive(repo.localPath)
+    .filter((candidate) => /\.(md|mdx)$/i.test(candidate))
+    .map((candidate) => path.relative(repo.localPath!, candidate).split(path.sep).join('/'))
+    .sort((a, b) => {
+      const priorityDelta = markdownPriority(a) - markdownPriority(b)
+      if (priorityDelta !== 0) {
+        return priorityDelta
+      }
+      return a.localeCompare(b)
+    })
+
+  const selected = candidates.slice(0, maxFiles)
+  const docs: RepoDocFile[] = []
+
+  for (const relativePath of selected) {
+    const absolutePath = path.join(repo.localPath, relativePath)
+    const raw = safeReadText(absolutePath)
+    const body = raw.slice(0, maxChars)
+    if (normalizeMarkdown(body).length === 0) {
+      continue
+    }
+
+    docs.push({
+      path: relativePath,
+      body,
+      source: 'local',
+    })
+  }
+
+  return docs
+}
+
+async function collectRemoteMarkdownDocs(repo: RepoRecord, token: string | undefined): Promise<RepoDocFile[]> {
+  if (!token) {
+    return []
+  }
+
+  const ownerRepo = parseOwnerRepo(repo.fullName)
+  if (!ownerRepo) {
+    return []
+  }
+
+  try {
+    const files = await fetchRepositoryMarkdownDocs({
+      owner: ownerRepo.owner,
+      repo: ownerRepo.repo,
+      defaultBranch: repo.defaultBranch ?? 'main',
+      token,
+      maxFiles: 25,
+      maxBytesPerFile: 120_000,
+    })
+
+    return files.map((entry) => ({
+      path: entry.path,
+      body: entry.body,
+      source: 'remote',
+      referenceUrl: entry.referenceUrl,
+    }))
+  } catch {
+    return []
+  }
+}
+
+function inferStoresFromDocs(docs: RepoDocFile[]): string[] {
+  const keywords = ['postgres', 'mysql', 'mongodb', 'dynamodb', 'redis', 'cassandra', 'sqlite', 'kafka', 'sqs', 'rabbitmq']
+  const matches: string[] = []
+  for (const doc of docs) {
+    const normalized = normalizeMarkdown(doc.body).toLowerCase()
+    for (const keyword of keywords) {
+      if (normalized.includes(keyword)) {
+        matches.push(keyword)
+      }
+    }
+  }
+
+  return topUnique(matches.sort((a, b) => a.localeCompare(b)), 6)
+}
+
+function collectByHeading(docs: RepoDocFile[], matcher: RegExp, limit: number): string[] {
+  const collected: string[] = []
+
+  for (const doc of docs) {
+    const sections = markdownSections(doc.body)
+    for (const section of sections) {
+      if (!matcher.test(section.heading)) {
+        continue
+      }
+
+      collected.push(...splitSentences(section.body))
+    }
+  }
+
+  return topUnique(collected, limit)
+}
+
+function collectCommands(docs: RepoDocFile[], limit: number): string[] {
+  const commands: string[] = []
+
+  for (const doc of docs) {
+    const matches = doc.body.match(/```(?:bash|sh|zsh|shell)?\n([\s\S]*?)```/gi) ?? []
+    for (const block of matches) {
+      const body = block
+        .replace(/```(?:bash|sh|zsh|shell)?\n?/i, '')
+        .replace(/```$/i, '')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0 && !line.startsWith('#'))
+
+      for (const line of body) {
+        commands.push(line)
+      }
+    }
+  }
+
+  return topUnique(commands, limit)
+}
+
+function extractGlossaryTerms(docs: RepoDocFile[]): string[] {
+  const terms: string[] = []
+  for (const doc of docs) {
+    const glossarySections = markdownSections(doc.body).filter((section) => /glossary|terms/.test(section.heading))
+    for (const section of glossarySections) {
+      for (const line of section.body.split('\n')) {
+        const match = line.match(/^\s*[-*]\s*\*\*([^*]+)\*\*:/)
+        if (match) {
+          terms.push(match[1].trim())
+        }
+      }
+    }
+  }
+
+  return topUnique(terms.sort((a, b) => a.localeCompare(b)), 12)
+}
+
+async function buildRepoInsights(repo: RepoRecord, token: string | undefined): Promise<RepoDocInsights> {
+  const localDocs = collectLocalMarkdownDocs(repo)
+  const remoteDocs = localDocs.length > 0 ? [] : await collectRemoteMarkdownDocs(repo, token)
+  const docs = [...localDocs, ...remoteDocs]
+
+  const summary =
+    firstParagraph(docs.find((doc) => /(^|\/)readme\.mdx?$/i.test(doc.path))?.body ?? '') ??
+    firstParagraph(docs[0]?.body ?? '') ??
+    'Unknown'
+
+  const responsibilities = collectByHeading(docs, /(overview|purpose|responsibilit|architecture|what .*does)/, 5)
+  const interfaces = collectByHeading(docs, /(api|endpoint|contract|schema|graphql|grpc|openapi)/, 5)
+  const asyncPatterns = collectByHeading(docs, /(event|async|queue|topic|stream|kafka|pubsub)/, 5)
+  const deployment = collectByHeading(docs, /(deploy|environment|infrastructure|release|production)/, 5)
+  const runbooks = collectByHeading(docs, /(runbook|incident|on.?call|troubleshoot|escalation)/, 5)
+  const security = collectByHeading(docs, /(security|auth|authorization|compliance|privacy|encryption|secret)/, 5)
+  const adrs = docs
+    .filter((doc) => /(\/|^)docs\/adr\/.+\.mdx?$/i.test(doc.path) || /(\/|^)adr\/.+\.mdx?$/i.test(doc.path))
+    .map((doc) => doc.referenceUrl ?? doc.path)
+  const localDevelopment = collectCommands(docs, 8)
+  const dataStores = inferStoresFromDocs(docs)
+  const glossary = extractGlossaryTerms(docs)
+  const docReferences = topUnique(
+    docs
+      .map((doc) => doc.referenceUrl ?? doc.path)
+      .sort((a, b) => a.localeCompare(b)),
+    8,
+  )
+
+  return {
+    summary,
+    responsibilities,
+    interfaces,
+    asyncPatterns,
+    deployment,
+    runbooks,
+    localDevelopment,
+    security,
+    adrs,
+    dataStores,
+    glossary,
+    docReferences,
+  }
+}
+
+async function buildAllRepoInsights(
+  selectedRepos: string[],
+  repoMap: Map<string, RepoRecord>,
+  token: string | undefined,
+): Promise<Map<string, RepoDocInsights>> {
+  const out = new Map<string, RepoDocInsights>()
+  await Promise.all(
+    selectedRepos.map(async (repoName) => {
+      const repo = repoMap.get(repoName)
+      if (!repo) {
+        out.set(repoName, EMPTY_REPO_INSIGHTS)
+        return
+      }
+
+      const insights = await buildRepoInsights(repo, token)
+      out.set(repoName, insights)
+    }),
+  )
+
+  return out
 }
 
 function filterReposForReadme(scope: ScopeManifest, config: ReadmeConfig): string[] {
@@ -931,6 +1289,95 @@ function formatList(values: string[]): string {
   return values.join(', ')
 }
 
+function insightsForRepo(repoName: string, context: ReadmeContext): RepoDocInsights {
+  return context.repoInsights.get(repoName) ?? EMPTY_REPO_INSIGHTS
+}
+
+function shorten(text: string, max = 180): string {
+  const normalized = normalizeMarkdown(text)
+  if (normalized.length <= max) {
+    return normalized
+  }
+
+  return `${normalized.slice(0, max - 1).trimEnd()}…`
+}
+
+function formatLinks(links: string[], limit = 3): string {
+  if (links.length === 0) {
+    return 'Unknown'
+  }
+
+  return links
+    .slice(0, limit)
+    .map((value) => {
+      if (/^https?:\/\//.test(value)) {
+        return `[doc](${value})`
+      }
+
+      return `\`${value}\``
+    })
+    .join(', ')
+}
+
+function inferRuntimeFromInsights(insights: RepoDocInsights): string | undefined {
+  const corpus = [
+    insights.summary,
+    ...insights.responsibilities,
+    ...insights.interfaces,
+    ...insights.localDevelopment,
+  ]
+    .join(' ')
+    .toLowerCase()
+
+  if (corpus.includes('next.js') || corpus.includes('nextjs')) {
+    return 'Node.js (Next.js)'
+  }
+  if (corpus.includes('nestjs')) {
+    return 'Node.js (NestJS)'
+  }
+  if (corpus.includes('express')) {
+    return 'Node.js (Express)'
+  }
+  if (corpus.includes('fastapi')) {
+    return 'Python (FastAPI)'
+  }
+  if (corpus.includes('django')) {
+    return 'Python (Django)'
+  }
+  if (corpus.includes('spring boot') || corpus.includes('spring')) {
+    return 'JVM (Spring)'
+  }
+  if (corpus.includes('golang') || corpus.includes('go service') || corpus.includes('go microservice')) {
+    return 'Go'
+  }
+  if (corpus.includes('rust')) {
+    return 'Rust'
+  }
+
+  return undefined
+}
+
+function inferDeployTargetFromInsights(insights: RepoDocInsights): string | undefined {
+  const corpus = [...insights.deployment, insights.summary].join(' ').toLowerCase()
+  if (corpus.includes('kubernetes') || corpus.includes('helm') || corpus.includes('k8s')) {
+    return 'Kubernetes'
+  }
+  if (corpus.includes('vercel')) {
+    return 'Vercel'
+  }
+  if (corpus.includes('ecs') || corpus.includes('fargate')) {
+    return 'AWS ECS/Fargate'
+  }
+  if (corpus.includes('lambda') || corpus.includes('serverless')) {
+    return 'Serverless'
+  }
+  if (corpus.includes('docker') || corpus.includes('container')) {
+    return 'Container'
+  }
+
+  return undefined
+}
+
 function ownerForService(serviceId: string, context: ReadmeContext): string {
   const overrides = context.config.ownerTeamOverrides ?? {}
   if (overrides[serviceId]) {
@@ -964,19 +1411,27 @@ function criticalityForService(serviceId: string, context: ReadmeContext): strin
 
 function apiSurfaceForService(serviceId: string, context: ReadmeContext): string {
   const serviceContracts = context.contracts.filter((record) => record.repo === serviceId)
-  if (serviceContracts.length === 0) {
-    return 'Unknown'
-  }
-
   const byType = new Map<string, number>()
   for (const contract of serviceContracts) {
     byType.set(contract.type, (byType.get(contract.type) ?? 0) + 1)
   }
 
-  return [...byType.entries()]
+  const typed = [...byType.entries()]
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([type, count]) => `${type} (${count})`)
-    .join(', ')
+
+  const insights = insightsForRepo(serviceId, context)
+  const inferred = topUnique(
+    [...insights.interfaces, ...insights.asyncPatterns].map((line) => shorten(line, 70)),
+    2,
+  )
+
+  const composed = [...typed, ...inferred]
+  if (composed.length === 0) {
+    return 'Unknown'
+  }
+
+  return composed.join(', ')
 }
 
 function dependenciesForService(serviceId: string, context: ReadmeContext): string {
@@ -1028,89 +1483,43 @@ function serviceCatalog(context: ReadmeContext): ServiceCatalogRow[] {
 
   return serviceIds.map((serviceId) => {
     const repo = context.repoMap.get(serviceId)
+    const insights = insightsForRepo(serviceId, context)
+    const runtime = repo ? inferRuntimeFramework(repo) : 'Unknown'
+    const runtimeFromDocs = inferRuntimeFromInsights(insights)
+    const deploy = repo ? inferDeployTarget(repo) : 'Unknown'
+    const deployFromDocs = inferDeployTargetFromInsights(insights)
+    const serviceDataStores = [...new Set([...datastoresForService(serviceId, context).split(', ').filter((entry) => entry !== 'Unknown'), ...insights.dataStores])]
+      .filter((entry) => entry.length > 0)
+      .sort((a, b) => a.localeCompare(b))
+
     return {
       serviceName: serviceId,
       repository: repo?.fullName ?? serviceId,
       ownerTeam: ownerForService(serviceId, context),
-      runtime: repo ? inferRuntimeFramework(repo) : 'Unknown',
+      runtime: runtime !== 'Unknown' ? runtime : runtimeFromDocs ?? 'Unknown',
       apiEventSurface: apiSurfaceForService(serviceId, context),
       dependencies: dependenciesForService(serviceId, context),
-      dataStores: datastoresForService(serviceId, context),
-      deployTarget: repo ? inferDeployTarget(repo) : 'Unknown',
+      dataStores: formatList(serviceDataStores),
+      deployTarget: deploy !== 'Unknown' ? deploy : deployFromDocs ?? 'Unknown',
       tier: criticalityForService(serviceId, context),
       status: statusForService(serviceId, context),
     }
   })
 }
 
-function resolveSectionSources(section: SectionPayload, sources: SourceRef[]): SourceRef[] {
-  const ids = new Set(section.sourceIds)
-  return sources
-    .filter((source) => ids.has(source.id))
-    .sort((a, b) => a.label.localeCompare(b.label))
+function sectionAnchor(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
 }
 
-function renderSourceBlock(sourceRefs: SourceRef[]): string[] {
-  const lines: string[] = ['### Sources', '']
-  if (sourceRefs.length === 0) {
-    lines.push('- Unknown')
-    lines.push('')
-    return lines
-  }
-
-  for (const source of sourceRefs) {
-    const generated = source.generatedAt ?? 'Unknown'
-    const freshness = source.stale ? 'stale' : 'fresh'
-    const suffix = source.note ? ` (${source.note})` : ''
-    lines.push(`- ${source.label}: \`${source.path}\` (generated: ${generated}, ${freshness})${suffix}`)
-  }
-  lines.push('')
-  return lines
-}
-
-function renderStaleWarning(sourceRefs: SourceRef[]): string[] {
-  const stale = sourceRefs.filter((source) => source.required && (source.stale || !source.exists))
-  if (stale.length === 0) {
-    return []
-  }
-
-  const lines = ['> [!WARNING]', '> Stale or missing source data detected for this section:', ...stale.map((source) => `> - ${source.label}`), '']
-  return lines
-}
-
-function defaultManualBlockText(sectionId: ReadmeSectionId): string {
-  return `\nAdd team-specific notes for \`${sectionId}\` here.\n`
-}
-
-function extractManualBlocks(existingContent: string): Map<ReadmeSectionId, string> {
-  const out = new Map<ReadmeSectionId, string>()
-  for (const sectionId of README_SECTION_ORDER) {
-    const escaped = sectionId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const regex = new RegExp(
-      `<!-- SDX:SECTION:${escaped}:MANUAL:START -->([\\s\\S]*?)<!-- SDX:SECTION:${escaped}:MANUAL:END -->`,
-      'm',
-    )
-    const match = existingContent.match(regex)
-    if (match) {
-      out.set(sectionId, match[1])
-    }
-  }
-  return out
-}
-
-function renderSection(section: SectionPayload, sources: SourceRef[], manualContent: string | undefined): string {
+function renderSection(section: SectionPayload): string {
   const lines: string[] = []
-  lines.push(`<!-- SDX:SECTION:${section.id}:START -->`)
   lines.push(`## ${section.title}`)
   lines.push('')
   lines.push(...section.body)
-  lines.push('')
-  const sourceRefs = resolveSectionSources(section, sources)
-  lines.push(...renderStaleWarning(sourceRefs))
-  lines.push(...renderSourceBlock(sourceRefs))
-  const manualBody = manualContent ?? defaultManualBlockText(section.id)
-  lines.push(`<!-- SDX:SECTION:${section.id}:MANUAL:START -->${manualBody}<!-- SDX:SECTION:${section.id}:MANUAL:END -->`)
-  lines.push(`<!-- SDX:SECTION:${section.id}:END -->`)
   lines.push('')
   return lines.join('\n')
 }
@@ -1250,13 +1659,13 @@ function unifiedDiff(oldText: string, newText: string, oldLabel: string, newLabe
   return `${lines.join('\n')}\n`
 }
 
-function buildReadmeContext(
+async function buildReadmeContext(
   mapId: string,
   db: Database.Database,
   cwd: string,
   outputPath: string,
   config: ReadmeConfig,
-): ReadmeContext {
+): Promise<ReadmeContext> {
   const now = new Date()
   const threshold = config.staleThresholdHours ?? 72
 
@@ -1316,6 +1725,17 @@ function buildReadmeContext(
   )
   sourceRefs.push(sourceFromRepoSync(repos, selectedRepos, threshold, now))
 
+  let githubToken: string | undefined
+  try {
+    const sdxConfig = loadConfig(cwd)
+    const tokenEnv = sdxConfig.github?.tokenEnv?.trim() || 'GITHUB_TOKEN'
+    githubToken = process.env[tokenEnv]
+  } catch {
+    githubToken = process.env['GITHUB_TOKEN']
+  }
+
+  const repoInsights = await buildAllRepoInsights(selectedRepos, repoMap, githubToken)
+
   return {
     cwd,
     mapId,
@@ -1334,6 +1754,7 @@ function buildReadmeContext(
     sourceSnapshotAt: computeSnapshotTimestamp(sourceRefs, now),
     coreRequestPath: findCoreRequestPath(model, serviceMap),
     sourceRepoSyncAt: sourceRefs.find((source) => source.id === 'repo-sync')?.generatedAt,
+    repoInsights,
   }
 }
 
@@ -1351,20 +1772,10 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
 
   const catalogRows = serviceCatalog(context)
   const asyncContracts = context.contracts.filter((record) => record.type === 'asyncapi')
-
-  const repoRows = context.selectedRepos.map((repoName) => {
-    const repo = context.repoMap.get(repoName)
-    return {
-      name: repoName,
-      fullName: repo?.fullName ?? repoName,
-      owner: ownerForService(repoName, context),
-      source: repo?.source ?? 'Unknown',
-      branch: repo?.defaultBranch ?? 'Unknown',
-      localPath: repo?.localPath ?? 'Unknown',
-      domain: domainForRepo(repoName, context.config),
-    }
-  })
-
+  const allInsights = context.selectedRepos.map((repoName) => ({
+    repoName,
+    insights: insightsForRepo(repoName, context),
+  }))
   const datastoreNodes = context.architectureModel.nodes.filter((node) => node.type === 'datastore')
   const adrDir = path.join(context.cwd, 'docs', 'adr')
   const adrFiles = fileExists(adrDir)
@@ -1375,14 +1786,110 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
         .sort((a, b) => a.localeCompare(b))
     : []
 
+  const summaryHighlights = allInsights
+    .filter((entry) => entry.insights.summary !== 'Unknown')
+    .sort((a, b) => a.repoName.localeCompare(b.repoName))
+    .slice(0, 8)
+    .map((entry) => `- **${entry.repoName}**: ${shorten(entry.insights.summary, 220)}`)
+
   const coreFlowLines =
     context.coreRequestPath.length > 0
       ? context.coreRequestPath.map((edge) => {
           const from = edge.from.replace('service:', '')
           const to = edge.to.replace('service:', '')
-          return `- ${from} -> ${to} (confidence ${edge.provenance.confidence.toFixed(2)})`
+          return `- ${from} -> ${to}`
         })
       : ['- Unknown']
+
+  const coreFlowServices = topUnique(
+    context.coreRequestPath.flatMap((edge) => [edge.from.replace('service:', ''), edge.to.replace('service:', '')]),
+    8,
+  )
+  const coreFlowNotes = coreFlowServices.map((serviceId) => {
+    const insights = insightsForRepo(serviceId, context)
+    const line = insights.responsibilities[0] ?? insights.interfaces[0] ?? insights.summary
+    return `- **${serviceId}**: ${shorten(line, 180)}`
+  })
+
+  const asyncHighlights = topUnique(
+    allInsights.flatMap((entry) =>
+      entry.insights.asyncPatterns.map((line) => `- **${entry.repoName}**: ${shorten(line, 180)}`),
+    ),
+    12,
+  )
+
+  const securityHighlights = topUnique(
+    allInsights.flatMap((entry) =>
+      entry.insights.security.map((line) => `- **${entry.repoName}**: ${shorten(line, 180)}`),
+    ),
+    10,
+  )
+
+  const runbookHighlights = topUnique(
+    allInsights.flatMap((entry) =>
+      entry.insights.runbooks.map((line) => `- **${entry.repoName}**: ${shorten(line, 180)}`),
+    ),
+    10,
+  )
+
+  const localDevCommands = topUnique(
+    allInsights.flatMap((entry) => entry.insights.localDevelopment),
+    12,
+  )
+
+  const glossaryTerms = topUnique(
+    allInsights.flatMap((entry) => entry.insights.glossary),
+    20,
+  ).sort((a, b) => a.localeCompare(b))
+
+  const repoRows = context.selectedRepos
+    .map((repoName) => {
+      const repo = context.repoMap.get(repoName)
+      const insights = insightsForRepo(repoName, context)
+      return {
+        fullName: repo?.fullName ?? repoName,
+        owner: ownerForService(repoName, context),
+        domain: domainForRepo(repoName, context.config),
+        role: shorten(insights.responsibilities[0] ?? insights.summary, 140),
+        docs: formatLinks(insights.docReferences, 3),
+      }
+    })
+    .sort((a, b) => a.fullName.localeCompare(b.fullName))
+
+  const environmentRows = catalogRows.map((row) => {
+    const insights = insightsForRepo(row.serviceName, context)
+    const note = insights.deployment[0] ?? insights.runbooks[0] ?? 'Unknown'
+    return `| ${row.serviceName} | ${row.deployTarget} | ${row.runtime} | ${shorten(note, 140)} |`
+  })
+
+  const contractsByRepo = new Map<string, ContractRecord[]>()
+  for (const contract of context.contracts) {
+    const entries = contractsByRepo.get(contract.repo) ?? []
+    entries.push(contract)
+    contractsByRepo.set(contract.repo, entries)
+  }
+
+  const contractRows = context.selectedRepos.map((repoName) => {
+    const contracts = contractsByRepo.get(repoName) ?? []
+    const summary = contracts.length > 0
+      ? contracts.map((contract) => `${contract.type}:${contract.path}`).slice(0, 4).join('<br/>')
+      : 'Unknown'
+    return `| ${repoName} | ${summary} |`
+  })
+
+  const adrLinks = topUnique(
+    [
+      ...adrFiles.map((fileName) => `- [${fileName}](./docs/adr/${fileName})`),
+      ...allInsights.flatMap((entry) =>
+        entry.insights.adrs.map((candidate) =>
+          /^https?:\/\//.test(candidate)
+            ? `- [${entry.repoName} ADR](${candidate})`
+            : `- ${entry.repoName}: \`${candidate}\``,
+        ),
+      ),
+    ],
+    30,
+  )
 
   const sectionById: Record<ReadmeSectionId, SectionPayload> = {
     what_is_this_system: {
@@ -1390,12 +1897,15 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
       title: SECTION_TITLES['what_is_this_system'],
       body: [
         context.config.customIntro ??
-          'This README is generated by SDX as the canonical architecture onboarding guide for this org workspace.',
+          'SDX traverses repository documentation, contracts, and dependency signals to keep this architecture guide current.',
         '',
-        `- Organization: \`${context.scope.org}\``,
-        `- Map: \`${context.mapId}\``,
-        `- Repositories selected for this README: ${context.selectedRepos.length}`,
-        `- Services detected: ${catalogRows.length}`,
+        `- Scope: \`${context.scope.org}\` org, map \`${context.mapId}\``,
+        `- Repositories in scope: ${context.selectedRepos.length}`,
+        `- Services identified: ${catalogRows.length}`,
+        '',
+        ...(summaryHighlights.length > 0
+          ? ['### Service purpose highlights', '', ...summaryHighlights]
+          : ['### Service purpose highlights', '', '- Unknown']),
       ],
       sourceIds: ['scope', 'repo-sync', 'service-map-json'],
     },
@@ -1404,12 +1914,12 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
       title: SECTION_TITLES['architecture_glance'],
       body: (() => {
         const lines = [
-        `- [System context diagram](${links.systemContext})`,
-        `- [Service dependency graph](${links.serviceDependency})`,
-        `- [Core request flow sequence](${links.sequence})`,
-        fileExists(context.diagrams.optionalArchitectureIndex)
-          ? `- [Architecture pack index](${links.optionalArchitectureIndex})`
-          : '- Architecture pack index: Not available',
+          `- [System context diagram](${links.systemContext})`,
+          `- [Service dependency graph](${links.serviceDependency})`,
+          `- [Core request flow sequence](${links.sequence})`,
+          fileExists(context.diagrams.optionalArchitectureIndex)
+            ? `- [Architecture pack index](${links.optionalArchitectureIndex})`
+            : '- Architecture pack index: Not available',
         ]
 
         if (includeC4Links) {
@@ -1423,6 +1933,12 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
               ? `- [Optional C4 container](${links.optionalContainer})`
               : '- Optional C4 container: Not available',
           )
+        }
+
+        if (coreFlowLines.length > 0) {
+          lines.push('')
+          lines.push('### Primary request path')
+          lines.push(...coreFlowLines)
         }
 
         return lines
@@ -1449,6 +1965,9 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
                 `| ${row.serviceName} | ${row.repository} | ${row.ownerTeam} | ${row.runtime} | ${row.apiEventSurface} | ${row.dependencies} | ${row.dataStores} | ${row.deployTarget} | ${row.tier} | ${row.status} |`,
             )
           : ['| Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown |']),
+        '',
+        '### Service briefs',
+        ...(summaryHighlights.length > 0 ? summaryHighlights : ['- Unknown']),
       ],
       sourceIds: ['service-map-json', 'contracts-json', 'architecture-model', 'repo-sync'],
     },
@@ -1457,8 +1976,11 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
       title: SECTION_TITLES['critical_flows'],
       body: [
         `- Primary sequence diagram: [core-request-flow.mmd](${links.sequence})`,
-        '- Highest-confidence path:',
+        '- Current highest-confidence request chain:',
         ...coreFlowLines,
+        '',
+        '### Service responsibilities in this flow',
+        ...(coreFlowNotes.length > 0 ? coreFlowNotes : ['- Unknown']),
       ],
       sourceIds: ['architecture-model', 'service-map-json', 'docs-dependencies', 'diagram-core-sequence'],
     },
@@ -1474,6 +1996,9 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
                 `| ${record.path} | ${record.repo} | ${record.version ?? 'Unknown'} | ${record.compatibilityStatus} | ${formatList(record.producers)} | ${formatList(record.consumers)} |`,
             )
           : ['| Unknown | Unknown | Unknown | Unknown | Unknown | Unknown |']),
+        '',
+        '### Async behavior from repository docs',
+        ...(asyncHighlights.length > 0 ? asyncHighlights : ['- Unknown']),
       ],
       sourceIds: ['contracts-json', 'architecture-model'],
     },
@@ -1481,14 +2006,9 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
       id: 'contracts_index',
       title: SECTION_TITLES['contracts_index'],
       body: [
-        '| Repository | Type | Path | Version | Compatibility |',
-        '|---|---|---|---|---|',
-        ...(context.contracts.length > 0
-          ? context.contracts.map(
-              (record) =>
-                `| ${record.repo} | ${record.type} | ${record.path} | ${record.version ?? 'Unknown'} | ${record.compatibilityStatus} |`,
-            )
-          : ['| Unknown | Unknown | Unknown | Unknown | Unknown |']),
+        '| Repository | Contract surfaces |',
+        '|---|---|',
+        ...(contractRows.length > 0 ? contractRows : ['| Unknown | Unknown |']),
       ],
       sourceIds: ['contracts-json', 'contracts-md'],
     },
@@ -1496,14 +2016,14 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
       id: 'repository_index',
       title: SECTION_TITLES['repository_index'],
       body: [
-        '| Repository | Owner/team | Domain | Source | Default branch | Local path |',
-        '|---|---|---|---|---|---|',
+        '| Repository | Owner/team | Domain | Role in system | Key docs |',
+        '|---|---|---|---|---|',
         ...(repoRows.length > 0
           ? repoRows.map(
               (row) =>
-                `| ${row.fullName} | ${row.owner} | ${row.domain} | ${row.source} | ${row.branch} | ${row.localPath.replace(/\|/g, '\\|')} |`,
+                `| ${row.fullName} | ${row.owner} | ${row.domain} | ${row.role} | ${row.docs} |`,
             )
-          : ['| Unknown | Unknown | Unknown | Unknown | Unknown | Unknown |']),
+          : ['| Unknown | Unknown | Unknown | Unknown | Unknown |']),
       ],
       sourceIds: ['scope', 'repo-sync'],
     },
@@ -1513,12 +2033,7 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
       body: [
         '| Service | Deploy target | Runtime/framework | Environment notes |',
         '|---|---|---|---|',
-        ...(catalogRows.length > 0
-          ? catalogRows.map(
-              (row) =>
-                `| ${row.serviceName} | ${row.deployTarget} | ${row.runtime} | ${row.deployTarget === 'Unknown' ? 'Unknown' : 'Validate env parity in deployment pipeline'} |`,
-            )
-          : ['| Unknown | Unknown | Unknown | Unknown |']),
+        ...(environmentRows.length > 0 ? environmentRows : ['| Unknown | Unknown | Unknown | Unknown |']),
       ],
       sourceIds: ['service-map-json', 'repo-sync', 'architecture-model'],
     },
@@ -1546,11 +2061,13 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
       id: 'security_compliance',
       title: SECTION_TITLES['security_compliance'],
       body: [
-        '- Authentication/authorization model: Unknown',
-        '- Data classification posture: Unknown',
-        '- Compliance scope (SOC2/PCI/HIPAA/etc.): Unknown',
-        '- Secret management baseline: Unknown',
-        '- Required action: populate this section via manual block with org security standards.',
+        ...(securityHighlights.length > 0
+          ? securityHighlights
+          : [
+              '- Authentication and authorization approach: Unknown',
+              '- Data classification and compliance posture: Unknown',
+              '- Secret management and key handling: Unknown',
+            ]),
       ],
       sourceIds: ['architecture-model', 'contracts-json'],
     },
@@ -1560,13 +2077,17 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
       body: [
         '```bash',
         './scripts/sdx status',
+        `./scripts/sdx repo sync --org ${context.scope.org}`,
         `./scripts/sdx map build ${context.mapId}`,
         `./scripts/sdx contracts extract --map ${context.mapId}`,
-        `./scripts/sdx docs generate --map ${context.mapId}`,
+        `./scripts/sdx architecture generate --map ${context.mapId}`,
         `./scripts/sdx docs readme --map ${context.mapId}`,
         '```',
         '',
-        '- Use `--check` in CI to enforce freshness and deterministic output.',
+        '### Commands found in service docs',
+        ...(localDevCommands.length > 0
+          ? ['```bash', ...localDevCommands.map((command) => command.replace(/`/g, '')), '```']
+          : ['- Unknown']),
       ],
       sourceIds: ['scope', 'service-map-json', 'contracts-json'],
     },
@@ -1574,32 +2095,25 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
       id: 'runbooks_escalation',
       title: SECTION_TITLES['runbooks_escalation'],
       body: [
-        '- Runbook root: `docs/runbooks/` (Unknown if not present)',
-        '- Escalation path: Unknown',
-        '- Incident channel: Unknown',
-        '- Required action: populate escalation ownership in manual block.',
+        ...(runbookHighlights.length > 0
+          ? runbookHighlights
+          : ['- Runbooks and escalation notes are not explicitly documented in scanned repositories.']),
       ],
       sourceIds: ['architecture-model', 'repo-sync'],
     },
     adr_index: {
       id: 'adr_index',
       title: SECTION_TITLES['adr_index'],
-      body: [
-        ...(adrFiles.length > 0
-          ? adrFiles.map((fileName) => `- [${fileName}](./docs/adr/${fileName})`)
-          : ['- Unknown (no ADR markdown files found under `docs/adr/`)']),
-      ],
+      body: [...(adrLinks.length > 0 ? adrLinks : ['- Unknown'])],
       sourceIds: ['docs-architecture'],
     },
     glossary: {
       id: 'glossary',
       title: SECTION_TITLES['glossary'],
       body: [
-        '- **Service**: A deployable unit represented by a repository in the selected map scope.',
-        '- **Contract**: API/event interface artifact (OpenAPI, GraphQL, Protobuf, AsyncAPI).',
-        '- **Map**: A named SDX scope manifest that defines discovered/included/excluded repos.',
-        '- **Override**: Manual architecture hints in `maps/<map-id>/architecture-overrides.json`.',
-        '- **Unknown**: Field not currently derivable from SDX artifacts; requires manual completion.',
+        ...(glossaryTerms.length > 0
+          ? glossaryTerms.map((term) => `- **${term}**: Refer to service-level docs for context.`)
+          : ['- Unknown']),
       ],
       sourceIds: ['scope', 'service-map-json', 'contracts-json', 'architecture-model'],
     },
@@ -1607,14 +2121,11 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
       id: 'changelog_metadata',
       title: SECTION_TITLES['changelog_metadata'],
       body: [
-        `- Generated timestamp: ${context.sourceSnapshotAt}`,
-        `- Map id: ${context.mapId}`,
-        `- Schema version: ${SCHEMA_VERSION}`,
-        `- CLI version: ${getCliPackageVersion()}`,
-        `- Freshness threshold (hours): ${context.staleThresholdHours}`,
-        `- Repo sync baseline: ${context.sourceRepoSyncAt ?? 'Unknown'}`,
-        '- Source refs used:',
-        ...context.sources.map((source) => `  - ${source.label}: \`${source.path}\``),
+        `- Last generated: ${context.sourceSnapshotAt}`,
+        `- Source snapshot: ${context.sourceSnapshotAt}`,
+        `- Map: ${context.mapId}`,
+        `- Tooling: SDX CLI ${getCliPackageVersion()} (schema ${SCHEMA_VERSION})`,
+        '- Run `./scripts/sdx docs readme --map <map-id> --check` in CI to verify freshness and drift.',
       ],
       sourceIds: context.sources.map((source) => source.id),
     },
@@ -1623,21 +2134,22 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
   return README_SECTION_ORDER.map((sectionId) => sectionById[sectionId])
 }
 
-function renderReadme(sections: SectionPayload[], context: ReadmeContext, existingContent: string): RenderOutput {
-  const manualBlocks = extractManualBlocks(existingContent)
-
+function renderReadme(sections: SectionPayload[], context: ReadmeContext): RenderOutput {
   const lines: string[] = [
-    '# SDX Organization Architecture Workspace',
+    `# ${context.scope.org} System Architecture`,
     '',
-    `> Generated for org \`${context.scope.org}\` using map \`${context.mapId}\`.`,
+    `This README is the architecture entry point for the \`${context.scope.org}\` engineering organization.`,
     '',
-    `> Source snapshot timestamp: ${context.sourceSnapshotAt}`,
+    `It is generated by SDX from repository docs, contracts, and map artifacts using \`${context.mapId}\`.`,
+    '',
+    '## Table of contents',
+    '',
+    ...sections.map((section) => `- [${section.title}](#${sectionAnchor(section.title)})`),
     '',
   ]
 
   for (const section of sections) {
-    const manual = manualBlocks.get(section.id)
-    lines.push(renderSection(section, context.sources, manual))
+    lines.push(renderSection(section))
   }
 
   return {
@@ -1690,7 +2202,7 @@ function summarizeResult(
   return lines.join('\n')
 }
 
-export function generateReadme(options: GenerateReadmeOptions): GenerateReadmeResult {
+export async function generateReadme(options: GenerateReadmeOptions): Promise<GenerateReadmeResult> {
   const cwd = options.cwd ?? process.cwd()
   const outputPath = path.resolve(cwd, options.output ?? 'README.md')
   const includeSections = options.includeSections ?? []
@@ -1703,7 +2215,7 @@ export function generateReadme(options: GenerateReadmeOptions): GenerateReadmeRe
   const {config, sourcePath} = loadReadmeConfig(cwd)
   const selectedSections = selectSections(config, includeSections, excludeSections)
 
-  const context = buildReadmeContext(options.mapId, options.db, cwd, outputPath, config)
+  const context = await buildReadmeContext(options.mapId, options.db, cwd, outputPath, config)
 
   if (sourcePath) {
     context.sources.push(
@@ -1755,7 +2267,7 @@ export function generateReadme(options: GenerateReadmeOptions): GenerateReadmeRe
   const orderedSections = buildSections(context).filter((section) => selectedSections.includes(section.id))
 
   const existingContent = safeReadText(outputPath)
-  const rendered = renderReadme(orderedSections, context, existingContent)
+  const rendered = renderReadme(orderedSections, context)
 
   const {stale, missing, changed} = checkFailures(existingContent, rendered.content, rendered.sourceRefs)
   const shouldWrite = writeEnabled && changed
