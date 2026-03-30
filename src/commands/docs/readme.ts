@@ -27,7 +27,7 @@ export default class DocsReadmeCommand extends Command {
     const includeSections = parseReadmeSectionList(flags.include)
     const excludeSections = parseReadmeSectionList(flags.exclude)
 
-    const result = generateReadme({
+    const result = await generateReadme({
       mapId: flags.map,
       db: context.db,
       cwd: context.cwd,

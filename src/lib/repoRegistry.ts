@@ -71,6 +71,7 @@ export function upsertRepos(db: Database.Database, repos: RepoRecord[]): void {
 
 export function setLocalRepoPath(db: Database.Database, name: string, localPath: string, org?: string): RepoRecord {
   const normalized = path.resolve(localPath)
+  const now = new Date().toISOString()
 
   const existing = db
     .prepare('SELECT * FROM repo_registry WHERE name = ?')
@@ -78,13 +79,17 @@ export function setLocalRepoPath(db: Database.Database, name: string, localPath:
 
   if (existing) {
     db.prepare(
-      `UPDATE repo_registry SET local_path = ?, source = CASE WHEN source='github' THEN 'hybrid' ELSE 'local' END WHERE name = ?`,
-    ).run(normalized, name)
+      `UPDATE repo_registry
+       SET local_path = ?,
+           source = CASE WHEN source='github' THEN 'hybrid' ELSE 'local' END,
+           last_synced_at = ?
+       WHERE name = ?`,
+    ).run(normalized, now, name)
   } else {
     db.prepare(
-      `INSERT INTO repo_registry (name, full_name, org, archived, fork, local_path, source)
-       VALUES (?, ?, ?, 0, 0, ?, 'local')`,
-    ).run(name, org ? `${org}/${name}` : name, org ?? 'local', normalized)
+      `INSERT INTO repo_registry (name, full_name, org, archived, fork, local_path, source, last_synced_at)
+       VALUES (?, ?, ?, 0, 0, ?, 'local', ?)`,
+    ).run(name, org ? `${org}/${name}` : name, org ?? 'local', normalized, now)
   }
 
   return getRepoByName(db, name)

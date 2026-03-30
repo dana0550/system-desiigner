@@ -180,6 +180,16 @@ Use overrides to:
 ### Canonical Root README Generation
 Generate a complete root `README.md` as the canonical onboarding and architecture overview for your org workspace.
 
+What `docs readme` now does:
+- traverses Markdown docs across repos in map scope (`README*`, `docs/**`, ADRs, runbooks),
+- infers service purpose, interfaces, async behavior, deployment cues, and operating notes,
+- combines that with map/contracts/architecture artifacts,
+- writes a clean narrative README (no SDX section marker blocks in output).
+
+For best results:
+- register local clones for repos you care about (`repo add`) so SDX can deeply scan docs,
+- set `GITHUB_TOKEN` to let SDX fetch Markdown docs for repos without local clones.
+
 ```bash
 # generate/update root README.md
 ./scripts/sdx docs readme --map platform-core
@@ -187,10 +197,10 @@ Generate a complete root `README.md` as the canonical onboarding and architectur
 # write to a different output file
 ./scripts/sdx docs readme --map platform-core --output ARCHITECTURE.md
 
-# check mode for CI (non-zero on stale sources, missing sources, or README drift)
+# check mode for CI (non-zero on stale/missing required artifacts or README drift)
 ./scripts/sdx docs readme --map platform-core --check
 
-# dry-run preview with unified diff and freshness summary
+# dry-run preview with unified diff + readiness summary
 ./scripts/sdx docs readme --map platform-core --dry-run
 
 # selective sections
@@ -229,10 +239,6 @@ Config capabilities:
 - diagram behavior (`diagram.autoGenerateMissing`, `diagram.includeC4Links`)
 - custom intro text (`customIntro`)
 - stale threshold override in hours (`staleThresholdHours`, default `72`)
-
-Manual content preservation:
-- generated wrappers: `<!-- SDX:SECTION:<id>:START --> ... <!-- SDX:SECTION:<id>:END -->`
-- preserved manual blocks: `<!-- SDX:SECTION:<id>:MANUAL:START --> ... <!-- SDX:SECTION:<id>:MANUAL:END -->`
 
 CI automation example:
 - copy [`docs/examples/readme-refresh.yml`](./docs/examples/readme-refresh.yml) into your consumer workspace repo under `.github/workflows/`.

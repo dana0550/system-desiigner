@@ -65,6 +65,34 @@ function setupWorkspaceWithMap(root: string): ReturnType<typeof initProject> {
       dependencies: {'events-service': '^1.0.0'},
     },
     {
+      'README.md': [
+        '# API Service',
+        '',
+        'API Service handles account and billing API requests for the platform.',
+        '',
+        '## Responsibilities',
+        '- Serve REST endpoints for account lifecycle and billing configuration.',
+        '',
+        '## API',
+        '- OpenAPI endpoint set for account and billing resources.',
+        '',
+        '## Deployment',
+        '- Deployed to Kubernetes using Helm.',
+        '',
+        '## Local Development',
+        '```bash',
+        'npm install',
+        'npm run dev',
+        '```',
+        '',
+        '## Security',
+        '- Uses OAuth2 service tokens and request signing.',
+      ].join('\n'),
+      'docs/runbooks/incidents.md': [
+        '# Incident Runbook',
+        '',
+        'Escalate to #platform-oncall when API error rate exceeds SLO.',
+      ].join('\n'),
       'openapi.yaml': 'openapi: 3.0.3\ninfo:\n  title: API Service\n  version: 1.1.0\n',
       'src/main.ts': 'export const app = true\n',
       'CODEOWNERS': '* @acme/platform\n',
@@ -80,6 +108,25 @@ function setupWorkspaceWithMap(root: string): ReturnType<typeof initProject> {
       dependencies: {},
     },
     {
+      'README.md': [
+        '# Events Service',
+        '',
+        'Events Service publishes domain events consumed by API clients and jobs.',
+        '',
+        '## Responsibilities',
+        '- Publish event streams for customer lifecycle and billing updates.',
+        '',
+        '## Async',
+        '- Publishes to Kafka topics for downstream consumers.',
+        '',
+        '## Data',
+        '- Uses Postgres and Redis for event state and dedupe.',
+      ].join('\n'),
+      'docs/adr/adr-001-event-versioning.md': [
+        '# ADR-001 Event Versioning',
+        '',
+        'We version events with semantic topic names and schema compatibility gates.',
+      ].join('\n'),
       'asyncapi.yaml': 'asyncapi: 2.6.0\ninfo:\n  title: Events\n  version: 2.0.0\n',
       'src/queue.ts': 'export const queue = true\n',
       '.github/CODEOWNERS': '* @acme/events\n',
@@ -101,14 +148,14 @@ function setupWorkspaceWithMap(root: string): ReturnType<typeof initProject> {
 }
 
 describe('docs readme generator', () => {
-  it('generates README with required sections and diagrams and remains idempotent', () => {
+  it('generates useful README content from repo docs and remains idempotent', async () => {
     const root = mkTempDir()
     const context = setupWorkspaceWithMap(root)
 
     const diagramsDir = path.join(root, 'docs', 'architecture', 'platform-core', 'diagrams')
     expect(fs.existsSync(path.join(diagramsDir, 'system-context.mmd'))).toBe(false)
 
-    const first = generateReadme({
+    const first = await generateReadme({
       mapId: 'platform-core',
       db: context.db,
       cwd: root,
@@ -121,11 +168,14 @@ describe('docs readme generator', () => {
     expect(fs.existsSync(path.join(diagramsDir, 'core-request-flow.mmd'))).toBe(true)
 
     const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8')
-    expect(readme).toContain('<!-- SDX:SECTION:what_is_this_system:START -->')
-    expect(readme).toContain('<!-- SDX:SECTION:changelog_metadata:END -->')
+    expect(readme).toContain('# acme System Architecture')
+    expect(readme).toContain('## Service catalog table')
+    expect(readme).toContain('Service purpose highlights')
+    expect(readme).toContain('API Service handles account and billing API requests for the platform.')
     expect(readme).toContain('[System context diagram](./docs/architecture/platform-core/diagrams/system-context.mmd)')
+    expect(readme).not.toContain('<!-- SDX:SECTION:')
 
-    const second = generateReadme({
+    const second = await generateReadme({
       mapId: 'platform-core',
       db: context.db,
       cwd: root,
@@ -137,11 +187,11 @@ describe('docs readme generator', () => {
     context.db.close()
   })
 
-  it('applies include then exclude section filtering with exclude precedence', () => {
+  it('applies include then exclude section filtering with exclude precedence', async () => {
     const root = mkTempDir()
     const context = setupWorkspaceWithMap(root)
 
-    const result = generateReadme({
+    const result = await generateReadme({
       mapId: 'platform-core',
       db: context.db,
       cwd: root,
@@ -153,37 +203,13 @@ describe('docs readme generator', () => {
     expect(result.sections).toEqual(['what_is_this_system'])
 
     const readme = fs.readFileSync(path.join(root, 'README.filtered.md'), 'utf8')
-    expect(readme).toContain('<!-- SDX:SECTION:what_is_this_system:START -->')
-    expect(readme).not.toContain('<!-- SDX:SECTION:service_catalog:START -->')
+    expect(readme).toContain('## What this org/system is')
+    expect(readme).not.toContain('## Service catalog table')
 
     context.db.close()
   })
 
-  it('preserves manual section blocks exactly between regenerations', () => {
-    const root = mkTempDir()
-    const context = setupWorkspaceWithMap(root)
-
-    generateReadme({mapId: 'platform-core', db: context.db, cwd: root})
-
-    const readmePath = path.join(root, 'README.md')
-    const original = fs.readFileSync(readmePath, 'utf8')
-    const manualText = '\nTeam note: keep this exact wording.\n'
-
-    const updated = original.replace(
-      /<!-- SDX:SECTION:service_catalog:MANUAL:START -->[\s\S]*?<!-- SDX:SECTION:service_catalog:MANUAL:END -->/,
-      `<!-- SDX:SECTION:service_catalog:MANUAL:START -->${manualText}<!-- SDX:SECTION:service_catalog:MANUAL:END -->`,
-    )
-    fs.writeFileSync(readmePath, updated, 'utf8')
-
-    generateReadme({mapId: 'platform-core', db: context.db, cwd: root})
-
-    const after = fs.readFileSync(readmePath, 'utf8')
-    expect(after).toContain(manualText.trim())
-
-    context.db.close()
-  })
-
-  it('uses JSON config over YAML and validates config schema', () => {
+  it('uses JSON config over YAML and validates config schema', async () => {
     const root = mkTempDir()
     const context = setupWorkspaceWithMap(root)
 
@@ -192,7 +218,7 @@ describe('docs readme generator', () => {
     fs.writeFileSync(path.join(appDir, 'readme.config.yaml'), 'customIntro: "YAML intro"\n', 'utf8')
     fs.writeFileSync(path.join(appDir, 'readme.config.json'), JSON.stringify({customIntro: 'JSON intro'}, null, 2), 'utf8')
 
-    generateReadme({mapId: 'platform-core', db: context.db, cwd: root, output: 'README.config.md'})
+    await generateReadme({mapId: 'platform-core', db: context.db, cwd: root, output: 'README.config.md'})
 
     const content = fs.readFileSync(path.join(root, 'README.config.md'), 'utf8')
     expect(content).toContain('JSON intro')
@@ -200,19 +226,19 @@ describe('docs readme generator', () => {
 
     fs.writeFileSync(path.join(appDir, 'readme.config.json'), JSON.stringify({staleThresholdHours: -1}, null, 2), 'utf8')
 
-    expect(() =>
+    await expect(() =>
       generateReadme({
         mapId: 'platform-core',
         db: context.db,
         cwd: root,
         output: 'README.invalid.md',
       }),
-    ).toThrow()
+    ).rejects.toThrow()
 
     context.db.close()
   })
 
-  it('fails check mode when artifacts are stale', () => {
+  it('fails check mode when artifacts are stale', async () => {
     const root = mkTempDir()
     const context = setupWorkspaceWithMap(root)
 
@@ -220,9 +246,9 @@ describe('docs readme generator', () => {
     fs.mkdirSync(appDir, {recursive: true})
     fs.writeFileSync(path.join(appDir, 'readme.config.json'), JSON.stringify({staleThresholdHours: 0.000001}, null, 2), 'utf8')
 
-    generateReadme({mapId: 'platform-core', db: context.db, cwd: root})
+    await generateReadme({mapId: 'platform-core', db: context.db, cwd: root})
 
-    const checked = generateReadme({
+    const checked = await generateReadme({
       mapId: 'platform-core',
       db: context.db,
       cwd: root,
@@ -235,11 +261,11 @@ describe('docs readme generator', () => {
     context.db.close()
   })
 
-  it('supports dry-run without writing files and emits unified diff', () => {
+  it('supports dry-run without writing files and emits unified diff', async () => {
     const root = mkTempDir()
     const context = setupWorkspaceWithMap(root)
 
-    const result = generateReadme({
+    const result = await generateReadme({
       mapId: 'platform-core',
       db: context.db,
       cwd: root,
@@ -255,7 +281,7 @@ describe('docs readme generator', () => {
     context.db.close()
   })
 
-  it('renders Unknown values instead of omitting unresolved fields', () => {
+  it('renders Unknown values instead of omitting unresolved fields', async () => {
     const root = mkTempDir()
 
     const repoPath = createRepo(
@@ -277,7 +303,7 @@ describe('docs readme generator', () => {
     saveScopeManifest(scope, root)
     buildMapArtifacts('minimal-map', context.db, root)
 
-    generateReadme({mapId: 'minimal-map', db: context.db, cwd: root})
+    await generateReadme({mapId: 'minimal-map', db: context.db, cwd: root})
 
     const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8')
     expect(readme).toContain('Unknown')
