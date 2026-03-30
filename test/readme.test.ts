@@ -94,7 +94,12 @@ function setupWorkspaceWithMap(root: string): ReturnType<typeof initProject> {
         'Escalate to #platform-oncall when API error rate exceeds SLO.',
       ].join('\n'),
       'openapi.yaml': 'openapi: 3.0.3\ninfo:\n  title: API Service\n  version: 1.1.0\n',
-      'src/main.ts': 'export const app = true\n',
+      'src/main.ts': [
+        "import express from 'express'",
+        'const app = express()',
+        "app.get('/v1/accounts', (_req, res) => res.json({ok: true}))",
+        'export default app',
+      ].join('\n'),
       'CODEOWNERS': '* @acme/platform\n',
       'vercel.json': '{"version":2}\n',
     },
@@ -128,7 +133,11 @@ function setupWorkspaceWithMap(root: string): ReturnType<typeof initProject> {
         'We version events with semantic topic names and schema compatibility gates.',
       ].join('\n'),
       'asyncapi.yaml': 'asyncapi: 2.6.0\ninfo:\n  title: Events\n  version: 2.0.0\n',
-      'src/queue.ts': 'export const queue = true\n',
+      'src/queue.ts': [
+        'export function publishBillingUpdate() {',
+        "  publish('billing.updated')",
+        '}',
+      ].join('\n'),
       '.github/CODEOWNERS': '* @acme/events\n',
       'Dockerfile': 'FROM node:20\n',
     },
@@ -173,6 +182,9 @@ describe('docs readme generator', () => {
     expect(readme).toContain('Service purpose highlights')
     expect(readme).toContain('API Service handles account and billing API requests for the platform.')
     expect(readme).toContain('[System context diagram](./docs/architecture/platform-core/diagrams/system-context.mmd)')
+    expect(readme).toContain('### Service deep dives')
+    expect(readme).toContain('GET /v1/accounts')
+    expect(readme).toContain('billing.updated')
     expect(readme).not.toContain('<!-- SDX:SECTION:')
 
     const second = await generateReadme({

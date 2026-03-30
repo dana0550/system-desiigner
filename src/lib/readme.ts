@@ -166,6 +166,8 @@ interface RepoDocInsights {
   summary: string
   responsibilities: string[]
   interfaces: string[]
+  apiEndpoints: string[]
+  eventSignals: string[]
   asyncPatterns: string[]
   deployment: string[]
   runbooks: string[]
@@ -175,12 +177,18 @@ interface RepoDocInsights {
   dataStores: string[]
   glossary: string[]
   docReferences: string[]
+  internalDependencies: string[]
+  entryPoints: string[]
+  keyCodePaths: string[]
+  runtimeHints: string[]
 }
 
 const EMPTY_REPO_INSIGHTS: RepoDocInsights = {
   summary: 'Unknown',
   responsibilities: [],
   interfaces: [],
+  apiEndpoints: [],
+  eventSignals: [],
   asyncPatterns: [],
   deployment: [],
   runbooks: [],
@@ -190,6 +198,10 @@ const EMPTY_REPO_INSIGHTS: RepoDocInsights = {
   dataStores: [],
   glossary: [],
   docReferences: [],
+  internalDependencies: [],
+  entryPoints: [],
+  keyCodePaths: [],
+  runtimeHints: [],
 }
 
 interface ReadmeContext {
@@ -595,6 +607,237 @@ function topUnique(values: string[], limit: number): string[] {
   return out
 }
 
+const CODE_EXTENSIONS = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|cs|rb|php|scala)$/i
+
+function codeFilePriority(filePath: string): number {
+  const lower = filePath.toLowerCase()
+  if (/(^|\/)(src|app|server|cmd)\//.test(lower)) {
+    return 0
+  }
+  if (/(^|\/)api\//.test(lower)) {
+    return 1
+  }
+  if (/(^|\/)(controllers|routes|handlers)\//.test(lower)) {
+    return 2
+  }
+  if (/(^|\/)docs\//.test(lower)) {
+    return 3
+  }
+  return 4
+}
+
+function normalizeEndpoint(method: string, route: string): string {
+  const cleanedRoute = route.replace(/\s+/g, '').replace(/\/{2,}/g, '/').trim()
+  return `${method.toUpperCase()} ${cleanedRoute}`
+}
+
+function collectCodeSignals(repo: RepoRecord, knownRepos: Set<string>): {
+  apiEndpoints: string[]
+  eventSignals: string[]
+  internalDependencies: string[]
+  entryPoints: string[]
+  keyCodePaths: string[]
+  runtimeHints: string[]
+  dataStores: string[]
+  localDevelopment: string[]
+} {
+  if (!repo.localPath || !fileExists(repo.localPath)) {
+    return {
+      apiEndpoints: [],
+      eventSignals: [],
+      internalDependencies: [],
+      entryPoints: [],
+      keyCodePaths: [],
+      runtimeHints: [],
+      dataStores: [],
+      localDevelopment: [],
+    }
+  }
+
+  const endpoints: string[] = []
+  const eventSignals: string[] = []
+  const internalDependencies: string[] = []
+  const entryPoints: string[] = []
+  const keyCodePaths: string[] = []
+  const runtimeHints: string[] = []
+  const dataStores: string[] = []
+  const localDevelopment: string[] = []
+
+  const packagePath = path.join(repo.localPath, 'package.json')
+  if (fileExists(packagePath)) {
+    try {
+      const payload = readJsonFile<{
+        dependencies?: Record<string, string>
+        devDependencies?: Record<string, string>
+        scripts?: Record<string, string>
+      }>(packagePath)
+
+      const deps = [
+        ...Object.keys(payload.dependencies ?? {}),
+        ...Object.keys(payload.devDependencies ?? {}),
+      ]
+      for (const dep of deps) {
+        if (knownRepos.has(dep) && dep !== repo.name) {
+          internalDependencies.push(dep)
+        }
+      }
+
+      const scripts = payload.scripts ?? {}
+      for (const key of ['dev', 'start', 'test']) {
+        if (scripts[key]) {
+          localDevelopment.push(`npm run ${key}`)
+        }
+      }
+
+      if (deps.includes('next')) {
+        runtimeHints.push('Node.js (Next.js)')
+      }
+      if (deps.includes('express')) {
+        runtimeHints.push('Node.js (Express)')
+      }
+      if (deps.includes('@nestjs/core') || deps.includes('nestjs')) {
+        runtimeHints.push('Node.js (NestJS)')
+      }
+      if (deps.includes('fastify')) {
+        runtimeHints.push('Node.js (Fastify)')
+      }
+    } catch {
+      // Ignore malformed package.json; docs generation should continue.
+    }
+  }
+
+  if (fileExists(path.join(repo.localPath, 'requirements.txt')) || fileExists(path.join(repo.localPath, 'pyproject.toml'))) {
+    runtimeHints.push('Python')
+  }
+  if (fileExists(path.join(repo.localPath, 'go.mod'))) {
+    runtimeHints.push('Go')
+  }
+  if (fileExists(path.join(repo.localPath, 'Cargo.toml'))) {
+    runtimeHints.push('Rust')
+  }
+  if (fileExists(path.join(repo.localPath, 'pom.xml')) || fileExists(path.join(repo.localPath, 'build.gradle'))) {
+    runtimeHints.push('JVM')
+  }
+
+  const candidateFiles = listFilesRecursive(repo.localPath)
+    .map((candidate) => path.relative(repo.localPath!, candidate).split(path.sep).join('/'))
+    .filter((relativePath) => CODE_EXTENSIONS.test(relativePath) || /\.(proto|ya?ml|json|toml)$/i.test(relativePath))
+    .sort((a, b) => {
+      const priorityDelta = codeFilePriority(a) - codeFilePriority(b)
+      if (priorityDelta !== 0) {
+        return priorityDelta
+      }
+      return a.localeCompare(b)
+    })
+    .slice(0, 600)
+
+  for (const relativePath of candidateFiles) {
+    const absolutePath = path.join(repo.localPath, relativePath)
+
+    if (
+      /(^|\/)(main|index|server|app)\.(ts|tsx|js|jsx|py|go|rs|java|kt)$/i.test(relativePath) ||
+      /(^|\/)cmd\/[^/]+\/main\.go$/i.test(relativePath)
+    ) {
+      entryPoints.push(relativePath)
+    }
+
+    let content = ''
+    try {
+      content = safeReadText(absolutePath).slice(0, 80_000)
+    } catch {
+      continue
+    }
+
+    if (content.trim().length === 0) {
+      continue
+    }
+
+    const routePatterns: RegExp[] = [
+      /\b(?:app|router)\.(get|post|put|patch|delete)\(\s*['"`]([^'"`]+)['"`]/gi,
+      /@(?:Get|Post|Put|Patch|Delete)\(\s*['"`]?([^'"`)]+)?/g,
+      /@(?:app|router)\.(get|post|put|patch|delete)\(\s*["']([^"']+)["']/gi,
+      /@app\.route\(\s*["']([^"']+)["'][^)]*methods\s*=\s*\[([^\]]+)\]/gi,
+    ]
+
+    for (const pattern of routePatterns) {
+      let match: RegExpExecArray | null
+      while ((match = pattern.exec(content)) !== null) {
+        if (pattern.source.includes('@(?:Get|Post|Put|Patch|Delete)')) {
+          const method = match[0].match(/@(Get|Post|Put|Patch|Delete)/)?.[1] ?? 'GET'
+          const route = match[1] ?? '/'
+          endpoints.push(normalizeEndpoint(method, route))
+          keyCodePaths.push(relativePath)
+          continue
+        }
+
+        if (pattern.source.includes('@app\\.route')) {
+          const route = match[1] ?? '/'
+          const methodsRaw = match[2] ?? 'GET'
+          const methods = methodsRaw
+            .split(',')
+            .map((value) => value.replace(/['"\s]/g, '').toUpperCase())
+            .filter((value) => value.length > 0)
+
+          for (const method of methods) {
+            endpoints.push(normalizeEndpoint(method, route))
+          }
+          keyCodePaths.push(relativePath)
+          continue
+        }
+
+        const method = match[1] ?? 'GET'
+        const route = match[2] ?? match[1] ?? '/'
+        endpoints.push(normalizeEndpoint(method, route))
+        keyCodePaths.push(relativePath)
+      }
+    }
+
+    const eventPattern = /(?:publish|emit|produce|enqueue|send)\w*\(\s*['"`]([^'"`]{3,120})['"`]/gi
+    let eventMatch: RegExpExecArray | null
+    while ((eventMatch = eventPattern.exec(content)) !== null) {
+      eventSignals.push(eventMatch[1].trim())
+      keyCodePaths.push(relativePath)
+    }
+
+    const importPattern = /(?:from\s+['"]([^'"]+)['"]|require\(\s*['"]([^'"]+)['"]\s*\)|import\s+['"]([^'"]+)['"])/g
+    let importMatch: RegExpExecArray | null
+    while ((importMatch = importPattern.exec(content)) !== null) {
+      const target = (importMatch[1] ?? importMatch[2] ?? importMatch[3] ?? '').trim()
+      if (target.length === 0) {
+        continue
+      }
+
+      for (const repoName of knownRepos) {
+        if (repoName === repo.name) {
+          continue
+        }
+
+        if (target.includes(repoName)) {
+          internalDependencies.push(repoName)
+        }
+      }
+    }
+
+    const lowerContent = content.toLowerCase()
+    for (const keyword of ['postgres', 'mysql', 'mongodb', 'dynamodb', 'redis', 'cassandra', 'sqlite', 'kafka', 'sqs', 'rabbitmq']) {
+      if (lowerContent.includes(keyword)) {
+        dataStores.push(keyword)
+      }
+    }
+  }
+
+  return {
+    apiEndpoints: topUnique(endpoints, 18),
+    eventSignals: topUnique(eventSignals, 12),
+    internalDependencies: topUnique(internalDependencies.sort((a, b) => a.localeCompare(b)), 12),
+    entryPoints: topUnique(entryPoints, 8),
+    keyCodePaths: topUnique(keyCodePaths.sort((a, b) => a.localeCompare(b)), 12),
+    runtimeHints: topUnique(runtimeHints, 4),
+    dataStores: topUnique(dataStores.sort((a, b) => a.localeCompare(b)), 8),
+    localDevelopment: topUnique(localDevelopment, 8),
+  }
+}
+
 function collectLocalMarkdownDocs(repo: RepoRecord, maxFiles = 180, maxChars = 180_000): RepoDocFile[] {
   if (!repo.localPath || !fileExists(repo.localPath)) {
     return []
@@ -734,27 +977,53 @@ function extractGlossaryTerms(docs: RepoDocFile[]): string[] {
   return topUnique(terms.sort((a, b) => a.localeCompare(b)), 12)
 }
 
-async function buildRepoInsights(repo: RepoRecord, token: string | undefined): Promise<RepoDocInsights> {
+async function buildRepoInsights(
+  repo: RepoRecord,
+  token: string | undefined,
+  knownRepos: Set<string>,
+): Promise<RepoDocInsights> {
   const localDocs = collectLocalMarkdownDocs(repo)
   const remoteDocs = localDocs.length > 0 ? [] : await collectRemoteMarkdownDocs(repo, token)
   const docs = [...localDocs, ...remoteDocs]
+  const codeSignals = collectCodeSignals(repo, knownRepos)
 
-  const summary =
+  let summary =
     firstParagraph(docs.find((doc) => /(^|\/)readme\.mdx?$/i.test(doc.path))?.body ?? '') ??
     firstParagraph(docs[0]?.body ?? '') ??
     'Unknown'
 
-  const responsibilities = collectByHeading(docs, /(overview|purpose|responsibilit|architecture|what .*does)/, 5)
-  const interfaces = collectByHeading(docs, /(api|endpoint|contract|schema|graphql|grpc|openapi)/, 5)
-  const asyncPatterns = collectByHeading(docs, /(event|async|queue|topic|stream|kafka|pubsub)/, 5)
+  if (summary === 'Unknown') {
+    const runtime = codeSignals.runtimeHints[0] ?? inferRuntimeFramework(repo)
+    const endpointSummary =
+      codeSignals.apiEndpoints.length > 0 ? `exposes ${codeSignals.apiEndpoints.length} detected HTTP routes` : 'has no detected HTTP routes'
+    const eventSummary =
+      codeSignals.eventSignals.length > 0 ? `publishes/consumes ${codeSignals.eventSignals.length} event signals` : 'has unknown async patterns'
+    summary = `${repo.name} is a ${runtime} service that ${endpointSummary} and ${eventSummary}.`
+  }
+
+  const responsibilities = topUnique(
+    [...collectByHeading(docs, /(overview|purpose|responsibilit|architecture|what .*does)/, 5)],
+    6,
+  )
+  const interfaces = topUnique(
+    [
+      ...collectByHeading(docs, /(api|endpoint|contract|schema|graphql|grpc|openapi)/, 5),
+      ...codeSignals.apiEndpoints.map((endpoint) => `Endpoint: ${endpoint}`),
+    ],
+    8,
+  )
+  const asyncPatterns = topUnique(
+    [...collectByHeading(docs, /(event|async|queue|topic|stream|kafka|pubsub)/, 5)],
+    8,
+  )
   const deployment = collectByHeading(docs, /(deploy|environment|infrastructure|release|production)/, 5)
   const runbooks = collectByHeading(docs, /(runbook|incident|on.?call|troubleshoot|escalation)/, 5)
   const security = collectByHeading(docs, /(security|auth|authorization|compliance|privacy|encryption|secret)/, 5)
   const adrs = docs
     .filter((doc) => /(\/|^)docs\/adr\/.+\.mdx?$/i.test(doc.path) || /(\/|^)adr\/.+\.mdx?$/i.test(doc.path))
     .map((doc) => doc.referenceUrl ?? doc.path)
-  const localDevelopment = collectCommands(docs, 8)
-  const dataStores = inferStoresFromDocs(docs)
+  const localDevelopment = topUnique([...collectCommands(docs, 8), ...codeSignals.localDevelopment], 10)
+  const dataStores = topUnique([...inferStoresFromDocs(docs), ...codeSignals.dataStores], 8)
   const glossary = extractGlossaryTerms(docs)
   const docReferences = topUnique(
     docs
@@ -776,6 +1045,12 @@ async function buildRepoInsights(repo: RepoRecord, token: string | undefined): P
     dataStores,
     glossary,
     docReferences,
+    apiEndpoints: codeSignals.apiEndpoints,
+    eventSignals: codeSignals.eventSignals,
+    internalDependencies: codeSignals.internalDependencies,
+    entryPoints: codeSignals.entryPoints,
+    keyCodePaths: codeSignals.keyCodePaths,
+    runtimeHints: codeSignals.runtimeHints,
   }
 }
 
@@ -785,6 +1060,7 @@ async function buildAllRepoInsights(
   token: string | undefined,
 ): Promise<Map<string, RepoDocInsights>> {
   const out = new Map<string, RepoDocInsights>()
+  const knownRepos = new Set(selectedRepos)
   await Promise.all(
     selectedRepos.map(async (repoName) => {
       const repo = repoMap.get(repoName)
@@ -793,7 +1069,7 @@ async function buildAllRepoInsights(
         return
       }
 
-      const insights = await buildRepoInsights(repo, token)
+      const insights = await buildRepoInsights(repo, token, knownRepos)
       out.set(repoName, insights)
     }),
   )
@@ -1319,7 +1595,22 @@ function formatLinks(links: string[], limit = 3): string {
     .join(', ')
 }
 
+function formatCodePaths(paths: string[], limit = 4): string {
+  const deduped = topUnique(paths, limit)
+  if (deduped.length === 0) {
+    return 'Unknown'
+  }
+
+  return deduped
+    .map((candidate) => `\`${candidate}\``)
+    .join(', ')
+}
+
 function inferRuntimeFromInsights(insights: RepoDocInsights): string | undefined {
+  if (insights.runtimeHints.length > 0) {
+    return insights.runtimeHints[0]
+  }
+
   const corpus = [
     insights.summary,
     ...insights.responsibilities,
@@ -1421,12 +1712,10 @@ function apiSurfaceForService(serviceId: string, context: ReadmeContext): string
     .map(([type, count]) => `${type} (${count})`)
 
   const insights = insightsForRepo(serviceId, context)
-  const inferred = topUnique(
-    [...insights.interfaces, ...insights.asyncPatterns].map((line) => shorten(line, 70)),
-    2,
-  )
+  const endpointSummary = insights.apiEndpoints.length > 0 ? [`routes (${insights.apiEndpoints.length})`] : []
+  const eventSummary = insights.eventSignals.length > 0 ? [`signals (${insights.eventSignals.length})`] : []
 
-  const composed = [...typed, ...inferred]
+  const composed = [...typed, ...endpointSummary, ...eventSummary]
   if (composed.length === 0) {
     return 'Unknown'
   }
@@ -1440,7 +1729,8 @@ function dependenciesForService(serviceId: string, context: ReadmeContext): stri
     .filter((edge) => edge.from === sourceId && edge.to.startsWith('service:'))
     .map((edge) => edge.to.replace('service:', ''))
 
-  return formatList([...new Set(dependencies)].sort((a, b) => a.localeCompare(b)))
+  const docInferred = insightsForRepo(serviceId, context).internalDependencies
+  return formatList([...new Set([...dependencies, ...docInferred])].sort((a, b) => a.localeCompare(b)))
 }
 
 function datastoresForService(serviceId: string, context: ReadmeContext): string {
@@ -1817,6 +2107,12 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
     ),
     12,
   )
+  const codeEventHighlights = topUnique(
+    allInsights.flatMap((entry) =>
+      entry.insights.eventSignals.map((signal) => `- **${entry.repoName}**: ${signal}`),
+    ),
+    20,
+  )
 
   const securityHighlights = topUnique(
     allInsights.flatMap((entry) =>
@@ -1852,9 +2148,35 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
         domain: domainForRepo(repoName, context.config),
         role: shorten(insights.responsibilities[0] ?? insights.summary, 140),
         docs: formatLinks(insights.docReferences, 3),
+        keyPaths: formatCodePaths([...insights.entryPoints, ...insights.keyCodePaths], 4),
       }
     })
     .sort((a, b) => a.fullName.localeCompare(b.fullName))
+
+  const serviceDeepDiveLines = catalogRows.flatMap((row) => {
+    const insights = insightsForRepo(row.serviceName, context)
+    const interfaceFromCode = topUnique(
+      [...insights.apiEndpoints.map((endpoint) => `Endpoint ${endpoint}`), ...insights.eventSignals.map((signal) => `Signal ${signal}`)],
+      6,
+    )
+    const keyInterfaces = interfaceFromCode.length > 0 ? interfaceFromCode : topUnique(insights.interfaces, 4)
+    const keyResponsibilities = topUnique(insights.responsibilities.length > 0 ? insights.responsibilities : [insights.summary], 4)
+    const keyDependencies = dependenciesForService(row.serviceName, context)
+    const keyStores = row.dataStores
+    const keyPaths = formatCodePaths([...insights.entryPoints, ...insights.keyCodePaths], 5)
+
+    return [
+      `#### ${row.serviceName}`,
+      `- **What it does:** ${shorten(insights.summary, 260)}`,
+      `- **Runtime / deploy target:** ${row.runtime} / ${row.deployTarget}`,
+      `- **Responsibilities:** ${keyResponsibilities.length > 0 ? keyResponsibilities.map((entry) => shorten(entry, 130)).join(' | ') : 'Unknown'}`,
+      `- **Interfaces:** ${keyInterfaces.length > 0 ? keyInterfaces.map((entry) => shorten(entry, 130)).join(' | ') : 'Unknown'}`,
+      `- **Depends on services:** ${keyDependencies}`,
+      `- **Data stores / queues:** ${keyStores}`,
+      `- **Key code paths:** ${keyPaths}`,
+      '',
+    ]
+  })
 
   const environmentRows = catalogRows.map((row) => {
     const insights = insightsForRepo(row.serviceName, context)
@@ -1968,6 +2290,9 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
         '',
         '### Service briefs',
         ...(summaryHighlights.length > 0 ? summaryHighlights : ['- Unknown']),
+        '',
+        '### Service deep dives',
+        ...(serviceDeepDiveLines.length > 0 ? serviceDeepDiveLines : ['- Unknown']),
       ],
       sourceIds: ['service-map-json', 'contracts-json', 'architecture-model', 'repo-sync'],
     },
@@ -1999,6 +2324,9 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
         '',
         '### Async behavior from repository docs',
         ...(asyncHighlights.length > 0 ? asyncHighlights : ['- Unknown']),
+        '',
+        '### Detected event signals in code',
+        ...(codeEventHighlights.length > 0 ? codeEventHighlights : ['- Unknown']),
       ],
       sourceIds: ['contracts-json', 'architecture-model'],
     },
@@ -2016,14 +2344,14 @@ function buildSections(context: ReadmeContext): SectionPayload[] {
       id: 'repository_index',
       title: SECTION_TITLES['repository_index'],
       body: [
-        '| Repository | Owner/team | Domain | Role in system | Key docs |',
-        '|---|---|---|---|---|',
+        '| Repository | Owner/team | Domain | Role in system | Key docs | Key code paths |',
+        '|---|---|---|---|---|---|',
         ...(repoRows.length > 0
           ? repoRows.map(
               (row) =>
-                `| ${row.fullName} | ${row.owner} | ${row.domain} | ${row.role} | ${row.docs} |`,
+                `| ${row.fullName} | ${row.owner} | ${row.domain} | ${row.role} | ${row.docs} | ${row.keyPaths} |`,
             )
-          : ['| Unknown | Unknown | Unknown | Unknown | Unknown |']),
+          : ['| Unknown | Unknown | Unknown | Unknown | Unknown | Unknown |']),
       ],
       sourceIds: ['scope', 'repo-sync'],
     },
