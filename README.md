@@ -181,7 +181,7 @@ Use overrides to:
 Generate a complete root `README.md` as the canonical onboarding and architecture overview for your org workspace.
 
 What `docs readme` now does:
-- traverses Markdown docs across repos in map scope (`README*`, `docs/**`, ADRs, runbooks),
+- traverses repository docs **and source code** across repos in map scope,
 - infers service purpose, interfaces, async behavior, deployment cues, and operating notes,
 - combines that with map/contracts/architecture artifacts,
 - writes a clean narrative README (no SDX section marker blocks in output).
