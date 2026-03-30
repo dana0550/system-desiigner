@@ -1,7 +1,7 @@
 import {Command, Flags} from '@oclif/core'
 import {generateArchitecturePack} from '../../lib/architecture'
 import {loadProject, recordRun} from '../../lib/project'
-import {buildMapArtifacts, extractContractArtifacts, generateDocsArtifacts} from '../../lib/workflows'
+import {buildMapArtifacts, discoverFlowArtifacts, extractContractArtifacts, generateDocsArtifacts} from '../../lib/workflows'
 
 export default class ArchitectureGenerateCommand extends Command {
   static override description = 'Generate architecture pack artifacts and diagrams for a map'
@@ -30,6 +30,7 @@ export default class ArchitectureGenerateCommand extends Command {
     const mapArtifacts = buildMapArtifacts(flags.map, context.db, context.cwd)
     const contractArtifacts = extractContractArtifacts(flags.map, context.db, context.cwd)
     const docsArtifacts = generateDocsArtifacts(flags.map, context.db, context.cwd)
+    const flowArtifacts = discoverFlowArtifacts(flags.map, context.db, context.cwd)
 
     const result = generateArchitecturePack({
       mapId: flags.map,
@@ -50,6 +51,7 @@ export default class ArchitectureGenerateCommand extends Command {
         mapArtifacts,
         contractArtifacts,
         docsArtifacts,
+        flowArtifacts,
       },
     })
 
@@ -61,6 +63,7 @@ export default class ArchitectureGenerateCommand extends Command {
     this.log(`Baseline service map: ${result.baselineArtifacts.serviceMapPath}`)
     this.log(`Baseline contracts: ${result.baselineArtifacts.contractsPath}`)
     this.log(`Baseline architecture doc: ${result.baselineArtifacts.architectureDocPath}`)
+    this.log(`Flow graph: ${flowArtifacts.graphPath}`)
     if (result.indexDocPath) {
       this.log(`Architecture index: ${result.indexDocPath}`)
     }

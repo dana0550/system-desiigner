@@ -29,6 +29,7 @@ export function ensureStandardDirs(cwd = process.cwd()): void {
   ensureDir(path.join(getCodexDir(cwd), 'runs'))
   ensureDir(path.join(cwd, 'diagrams'))
   ensureDir(path.join(cwd, 'snapshots'))
+  ensureDir(path.join(cwd, 'runtime', 'otel'))
 }
 
 export function initProject(cwd = process.cwd()): ProjectContext {

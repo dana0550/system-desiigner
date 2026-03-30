@@ -91,7 +91,7 @@ export interface ContractRecord {
   generatedAt: string
   mapId: string
   repo: string
-  type: 'openapi' | 'graphql' | 'proto' | 'asyncapi'
+  type: 'openapi' | 'graphql' | 'proto' | 'asyncapi' | 'markdown'
   path: string
   version?: string
   producers: string[]
@@ -307,4 +307,136 @@ export interface PublishSyncResult {
   sourceSyncPrUrls: string[]
   artifactJsonPath: string
   artifactMarkdownPath: string
+}
+
+export type FlowNodeType = 'client' | 'endpoint' | 'service' | 'datastore' | 'event_bus' | 'external'
+export type FlowEdgeType =
+  | 'http_call'
+  | 'grpc_call'
+  | 'async_publish'
+  | 'async_consume'
+  | 'db_read'
+  | 'db_write'
+  | 'cache_read'
+  | 'cache_write'
+export type FlowSourceType = 'static' | 'runtime' | 'override'
+export type FlowEnvironment = 'dev' | 'staging' | 'prod'
+
+export interface EndpointInventoryRecord {
+  id: string
+  service: string
+  method: string
+  path: string
+  auth: string
+  version: string
+  schemaRef?: string
+  sourceFile: string
+  sourceLine: number
+}
+
+export interface FlowNode {
+  id: string
+  type: FlowNodeType
+  label: string
+  service?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface FlowEdge {
+  id: string
+  type: FlowEdgeType
+  from: string
+  to: string
+  protocol: string
+  auth: string
+  payloadSchemaRef?: string
+  piiTags: string[]
+  confidence: number
+  source: FlowSourceType
+  evidenceRefs: string[]
+  lastSeenByEnv: Partial<Record<FlowEnvironment, string>>
+  metadata?: Record<string, unknown>
+}
+
+export interface FlowGraphArtifact {
+  schemaVersion: string
+  generatedAt: string
+  mapId: string
+  org: string
+  nodes: FlowNode[]
+  edges: FlowEdge[]
+}
+
+export interface FlowFinding {
+  id: string
+  code:
+    | 'missing_local_clone'
+    | 'unresolved_base_url'
+    | 'unknown_endpoint_ownership'
+    | 'contract_mismatch'
+    | 'runtime_call_without_contract'
+    | 'contract_without_callers'
+    | 'stale_runtime_evidence'
+    | 'low_confidence_edge'
+  severity: 'error' | 'warning'
+  message: string
+  evidenceRefs: string[]
+  confidence?: number
+  service?: string
+  edgeId?: string
+}
+
+export interface FlowFindingsArtifact {
+  schemaVersion: string
+  generatedAt: string
+  mapId: string
+  org: string
+  findings: FlowFinding[]
+}
+
+export interface FlowJourney {
+  id: string
+  name: string
+  source: 'manual' | 'auto'
+  score: number
+  edgeIds: string[]
+  notes?: string
+}
+
+export interface FlowJourneysArtifact {
+  schemaVersion: string
+  generatedAt: string
+  mapId: string
+  org: string
+  journeys: FlowJourney[]
+}
+
+export interface FlowValidationResult {
+  schemaVersion: string
+  generatedAt: string
+  mapId: string
+  valid: boolean
+  errors: string[]
+  warnings: string[]
+  stats: {
+    nodeCount: number
+    edgeCount: number
+    endpointCount: number
+    runtimeBackedEdges: number
+  }
+}
+
+export interface FlowCheckResult {
+  schemaVersion: string
+  generatedAt: string
+  mapId: string
+  passed: boolean
+  driftDetected: boolean
+  validation: FlowValidationResult
+  errors: string[]
+  warnings: string[]
+  stats: {
+    edgeCount: number
+    nodeCount: number
+  }
 }

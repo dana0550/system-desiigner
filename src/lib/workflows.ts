@@ -2,6 +2,7 @@ import path from 'node:path'
 import Database from 'better-sqlite3'
 import {extractContracts, renderContractsMarkdown} from './contracts'
 import {renderArchitectureDoc} from './docs'
+import {discoverFlow} from './flow'
 import {writeJsonFile, writeTextFile} from './fs'
 import {buildServiceMapArtifact, renderServiceMapMarkdown, renderServiceMapMermaid} from './mapBuilder'
 import {listAllRepos} from './repoRegistry'
@@ -90,5 +91,29 @@ export function generateDocsArtifacts(mapId: string, db: Database.Database, cwd 
   return {
     architecturePath,
     dependencyPath,
+  }
+}
+
+export interface FlowDiscoveryWorkflowResult {
+  graphPath: string
+  endpointsPath: string
+  findingsPath: string
+  journeysPath: string
+}
+
+export function discoverFlowArtifacts(mapId: string, db: Database.Database, cwd = process.cwd()): FlowDiscoveryWorkflowResult {
+  const result = discoverFlow({
+    mapId,
+    db,
+    cwd,
+    env: 'all',
+    dryRun: false,
+  })
+
+  return {
+    graphPath: result.graphPath,
+    endpointsPath: result.endpointsPath,
+    findingsPath: result.findingsPath,
+    journeysPath: result.journeysPath,
   }
 }
