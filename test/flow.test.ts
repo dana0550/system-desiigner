@@ -257,4 +257,220 @@ describe('flow intelligence', () => {
 
     context.db.close()
   })
+
+  it('uses external dependency aliases to map calls to external nodes', () => {
+    const root = mkTempDir()
+    const now = new Date().toISOString()
+
+    const webPath = createRepo(
+      root,
+      'web-app',
+      {
+        'src/client.ts': "export const call = () => fetch('https://api.stripe.com/v1/customers')\n",
+      },
+      {
+        name: 'web-app',
+        dependencies: {react: '^18.0.0'},
+      },
+    )
+
+    const context = initProject(root)
+    upsertRepos(context.db, [repo('web-app', webPath, now)])
+
+    const scope = createScopeManifest('platform-core', 'acme', ['web-app'], root)
+    saveScopeManifest(scope, root)
+
+    const appDir = path.join(root, '.sdx')
+    fs.mkdirSync(appDir, {recursive: true})
+    fs.writeFileSync(
+      path.join(appDir, 'flow.config.json'),
+      JSON.stringify(
+        {
+          externalDependencyAliases: {
+            'api.stripe.com': 'Stripe API',
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    )
+
+    const discovered = discoverFlow({
+      mapId: 'platform-core',
+      db: context.db,
+      cwd: root,
+      dryRun: false,
+    })
+
+    expect(discovered.graph.nodes.some((node) => node.type === 'external' && node.label === 'Stripe API')).toBe(true)
+    expect(discovered.findings.findings.some((finding) => finding.code === 'unresolved_base_url')).toBe(false)
+
+    context.db.close()
+  })
+
+  it('fails validation when runtime evidence is present but missing in prod for high-confidence edges', () => {
+    const root = mkTempDir()
+    const now = new Date().toISOString()
+
+    const webPath = createRepo(
+      root,
+      'web-app',
+      {
+        'src/client.ts': "export const call = () => fetch('https://api-service.internal/v1/accounts')\n",
+      },
+      {
+        name: 'web-app',
+        dependencies: {react: '^18.0.0', express: '^4.0.0'},
+      },
+    )
+
+    const apiPath = createRepo(
+      root,
+      'api-service',
+      {
+        'src/server.ts': "app.get('/v1/accounts', handler)\n",
+        'openapi.yaml': [
+          'openapi: 3.0.3',
+          'info: {title: API, version: 1.0.0}',
+          'paths:',
+          '  /v1/accounts:',
+          '    get: {}',
+        ].join('\n'),
+      },
+      {
+        name: 'api-service',
+        dependencies: {express: '^4.0.0'},
+      },
+    )
+
+    const stagingRuntimeDir = path.join(root, 'runtime', 'otel', 'platform-core', 'staging')
+    fs.mkdirSync(stagingRuntimeDir, {recursive: true})
+    fs.writeFileSync(
+      path.join(stagingRuntimeDir, 'traces.json'),
+      JSON.stringify([
+        {
+          attributes: {
+            'service.name': 'web-app',
+            'http.method': 'GET',
+            'http.route': '/v1/accounts',
+            'peer.service': 'api-service',
+            endTime: now,
+          },
+        },
+      ]),
+      'utf8',
+    )
+
+    const context = initProject(root)
+    upsertRepos(context.db, [repo('web-app', webPath, now), repo('api-service', apiPath, now)])
+
+    const scope = createScopeManifest('platform-core', 'acme', ['web-app', 'api-service'], root)
+    saveScopeManifest(scope, root)
+
+    discoverFlow({
+      mapId: 'platform-core',
+      db: context.db,
+      cwd: root,
+      dryRun: false,
+      env: 'all',
+    })
+
+    const {validation} = validateFlow({
+      mapId: 'platform-core',
+      db: context.db,
+      cwd: root,
+    })
+
+    expect(validation.valid).toBe(false)
+    expect(validation.errors.some((error) => error.includes('Missing prod runtime evidence'))).toBe(true)
+
+    context.db.close()
+  })
+
+  it('classifies Next.js repos with API routes as services for caller modeling', () => {
+    const root = mkTempDir()
+    const now = new Date().toISOString()
+
+    const nextApiPath = createRepo(
+      root,
+      'next-api',
+      {
+        'app/api/health/route.ts': [
+          'export async function GET() {',
+          "  return Response.json({ok: true})",
+          '}',
+        ].join('\n'),
+        'src/client.ts': "export const ping = () => fetch('https://upstream.internal/v1/ping')\n",
+      },
+      {
+        name: 'next-api',
+        dependencies: {next: '^15.0.0'},
+      },
+    )
+
+    const context = initProject(root)
+    upsertRepos(context.db, [repo('next-api', nextApiPath, now)])
+    const scope = createScopeManifest('platform-core', 'acme', ['next-api'], root)
+    saveScopeManifest(scope, root)
+
+    const discovered = discoverFlow({
+      mapId: 'platform-core',
+      db: context.db,
+      cwd: root,
+      dryRun: false,
+    })
+
+    expect(discovered.graph.nodes.some((node) => node.id === 'service:next-api')).toBe(true)
+    expect(discovered.graph.nodes.some((node) => node.id === 'client:next-api')).toBe(false)
+
+    context.db.close()
+  })
+
+  it('ignores noisy test files during static extraction', () => {
+    const root = mkTempDir()
+    const now = new Date().toISOString()
+
+    const webPath = createRepo(
+      root,
+      'web-app',
+      {
+        'src/client.ts': "export const call = () => fetch('https://api-service.internal/v1/accounts')\n",
+        'src/client.test.ts': "export const noisy = () => fetch('https://unknown.example.com/noisy')\n",
+      },
+      {
+        name: 'web-app',
+        dependencies: {react: '^18.0.0'},
+      },
+    )
+
+    const apiPath = createRepo(
+      root,
+      'api-service',
+      {
+        'src/server.ts': "app.get('/v1/accounts', handler)\n",
+      },
+      {
+        name: 'api-service',
+        dependencies: {express: '^4.0.0'},
+      },
+    )
+
+    const context = initProject(root)
+    upsertRepos(context.db, [repo('web-app', webPath, now), repo('api-service', apiPath, now)])
+    const scope = createScopeManifest('platform-core', 'acme', ['web-app', 'api-service'], root)
+    saveScopeManifest(scope, root)
+
+    const discovered = discoverFlow({
+      mapId: 'platform-core',
+      db: context.db,
+      cwd: root,
+      dryRun: false,
+    })
+
+    const unresolved = discovered.findings.findings.filter((finding) => finding.code === 'unresolved_base_url')
+    expect(unresolved.length).toBe(0)
+
+    context.db.close()
+  })
 })

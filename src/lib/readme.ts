@@ -2168,7 +2168,7 @@ async function buildReadmeContext(
       cwd,
       threshold,
       now,
-      false,
+      true,
     ),
   )
   sourceRefs.push(
@@ -2179,7 +2179,7 @@ async function buildReadmeContext(
       cwd,
       threshold,
       now,
-      false,
+      true,
     ),
   )
   sourceRefs.push(
@@ -2190,7 +2190,7 @@ async function buildReadmeContext(
       cwd,
       threshold,
       now,
-      false,
+      true,
     ),
   )
   sourceRefs.push(sourceFromRepoSync(repos, selectedRepos, threshold, now))
@@ -2791,7 +2791,7 @@ export async function generateReadme(options: GenerateReadmeOptions): Promise<Ge
 
     upsertSourceRef(
       context.sources,
-      sourceFromFile('flow-graph', 'Flow graph', path.join(cwd, 'maps', options.mapId, 'flow', 'graph.json'), cwd, context.staleThresholdHours, context.now, false),
+      sourceFromFile('flow-graph', 'Flow graph', path.join(cwd, 'maps', options.mapId, 'flow', 'graph.json'), cwd, context.staleThresholdHours, context.now, true),
     )
     upsertSourceRef(
       context.sources,
@@ -2802,7 +2802,7 @@ export async function generateReadme(options: GenerateReadmeOptions): Promise<Ge
         cwd,
         context.staleThresholdHours,
         context.now,
-        false,
+        true,
       ),
     )
     upsertSourceRef(
@@ -2814,7 +2814,7 @@ export async function generateReadme(options: GenerateReadmeOptions): Promise<Ge
         cwd,
         context.staleThresholdHours,
         context.now,
-        false,
+        true,
       ),
     )
     try {

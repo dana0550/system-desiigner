@@ -390,18 +390,47 @@ function parsePackageDependencySet(repoPath: string): Set<string> {
   }
 }
 
+function hasAnyPath(root: string, candidates: string[]): boolean {
+  return candidates.some((candidate) => fileExists(path.join(root, candidate)))
+}
+
 function inferRepoKind(repo: RepoRecord): 'client' | 'service' {
   if (!repo.localPath || !fileExists(repo.localPath)) {
     return 'service'
   }
 
+  const lowerName = repo.name.toLowerCase()
+  if (lowerName.includes('api') || lowerName.includes('backend') || lowerName.includes('service')) {
+    return 'service'
+  }
+
   const deps = parsePackageDependencySet(repo.localPath)
+  const serviceHints = ['express', 'fastify', '@nestjs/core', 'nestjs', 'koa', 'hapi']
+  if (serviceHints.some((dep) => deps.has(dep))) {
+    return 'service'
+  }
+
+  if (deps.has('next')) {
+    const nextApiPaths = [
+      'app/api',
+      'src/app/api',
+      'pages/api',
+      'src/pages/api',
+      'server.ts',
+      'server.js',
+      'src/server.ts',
+      'src/server.js',
+    ]
+    if (hasAnyPath(repo.localPath, nextApiPaths)) {
+      return 'service'
+    }
+  }
+
   const clientHints = ['react', 'react-native', 'expo', 'next', 'vue', 'svelte', 'flutter', 'swiftui']
   if (clientHints.some((dep) => deps.has(dep))) {
     return 'client'
   }
 
-  const lowerName = repo.name.toLowerCase()
   if (lowerName.includes('web') || lowerName.includes('mobile') || lowerName.includes('ios') || lowerName.includes('android')) {
     return 'client'
   }
@@ -1028,6 +1057,14 @@ function serviceAliasMap(config: FlowConfig, overrides: FlowOverrides, repos: st
   return map
 }
 
+function externalAliasMap(config: FlowConfig): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const [alias, label] of Object.entries(config.externalDependencyAliases ?? {})) {
+    out.set(alias.toLowerCase(), label)
+  }
+  return out
+}
+
 function resolveServiceByHost(host: string, aliases: Map<string, string>, repos: string[]): string | undefined {
   const normalized = host.toLowerCase().replace(/:\d+$/, '')
   const direct = aliases.get(normalized)
@@ -1044,6 +1081,67 @@ function resolveServiceByHost(host: string, aliases: Map<string, string>, repos:
   }
 
   return undefined
+}
+
+function resolveExternalByHost(host: string, externalAliases: Map<string, string>): string | undefined {
+  const normalized = host.toLowerCase().replace(/:\d+$/, '')
+  const direct = externalAliases.get(normalized)
+  if (direct) {
+    return direct
+  }
+
+  const segments = normalized.split('.').filter((segment) => segment.length > 0)
+  for (let i = 0; i < segments.length; i += 1) {
+    const candidate = segments.slice(i).join('.')
+    const mapped = externalAliases.get(candidate)
+    if (mapped) {
+      return mapped
+    }
+  }
+
+  return undefined
+}
+
+function shouldScanSourceFile(relativePath: string): boolean {
+  const normalized = relativePath.replaceAll('\\', '/')
+  const lower = normalized.toLowerCase()
+  if (!SOURCE_EXTENSIONS.test(lower)) {
+    return false
+  }
+
+  const blockedFragments = ['/node_modules/', '/dist/', '/build/', '/coverage/', '/.next/', '/vendor/', '/__tests__/']
+  if (blockedFragments.some((fragment) => lower.includes(fragment))) {
+    return false
+  }
+
+  if (/\/(test|tests|spec)\//i.test(lower)) {
+    return false
+  }
+
+  if (/\.(test|spec)\.[a-z0-9]+$/i.test(lower)) {
+    return false
+  }
+
+  if (/\.d\.ts$/i.test(lower)) {
+    return false
+  }
+
+  return true
+}
+
+function stripLikelyComments(relativePath: string, content: string): string {
+  const lower = relativePath.toLowerCase()
+  if (!/\.(ts|tsx|js|jsx|mjs|cjs|go|rs|java|kt|swift|dart|py)$/i.test(lower)) {
+    return content
+  }
+
+  let stripped = content.replace(/\/\*[\s\S]*?\*\//g, ' ')
+  stripped = stripped
+    .split('\n')
+    .map((line) => line.replace(/^\s*\/\/.*$/g, '').replace(/^\s*#.*$/g, ''))
+    .join('\n')
+
+  return stripped
 }
 
 function extractEnvVarToken(value: string): string | undefined {
@@ -1363,7 +1461,14 @@ function parseRuntimeRecordFromSpanLike(spanLike: Record<string, unknown>, env: 
     messagingDestination,
     dbSystem,
     dbOperation,
-    timestamp: normalizeTimestamp(spanLike.endTimeUnixNano ?? spanLike.endTime ?? spanLike.timestamp),
+    timestamp: normalizeTimestamp(
+      spanLike.endTimeUnixNano ??
+        spanLike.endTime ??
+        spanLike.timestamp ??
+        attr.endTime ??
+        attr.end_time ??
+        attr.timestamp,
+    ),
     evidenceRef,
   }
 }
@@ -1552,9 +1657,11 @@ function resolveCallTarget(args: {
   repoEnv: Record<string, string>
   endpointByMethodPath: Map<string, EndpointInventoryRecord[]>
   aliases: Map<string, string>
+  externalAliases: Map<string, string>
   repos: string[]
 }): {
   targetService?: string
+  targetExternal?: string
   endpoint?: EndpointInventoryRecord
   unresolvedReason?: string
   normalizedPath?: string
@@ -1566,6 +1673,7 @@ function resolveCallTarget(args: {
   const parsedUrl = maybeUrl(resolvedRaw.replace(/^grpc:\/\//i, 'http://'))
   if (parsedUrl) {
     const targetService = resolveServiceByHost(parsedUrl.host, args.aliases, args.repos)
+    const targetExternal = targetService ? undefined : resolveExternalByHost(parsedUrl.host, args.externalAliases)
     const normalizedPath = normalizePathForMatch(parsedUrl.pathname)
     const methodPathKey = `${args.call.method.toUpperCase()}|${normalizedPath}`
     const candidates = args.endpointByMethodPath.get(methodPathKey) ?? []
@@ -1575,10 +1683,11 @@ function resolveCallTarget(args: {
 
     return {
       targetService,
+      targetExternal,
       endpoint,
       normalizedPath,
       resolvedUrl: parsedUrl.toString(),
-      unresolvedReason: !targetService ? 'unknown_target_service' : undefined,
+      unresolvedReason: !targetService && !targetExternal ? 'unknown_target_service' : undefined,
     }
   }
 
@@ -1620,6 +1729,13 @@ function resolveCallTarget(args: {
       return {
         targetService: alias,
       }
+    }
+  }
+
+  const externalAlias = args.externalAliases.get(resolvedRaw.toLowerCase())
+  if (externalAlias) {
+    return {
+      targetExternal: externalAlias,
     }
   }
 
@@ -1842,6 +1958,7 @@ function validationFromArtifacts(args: {
 
   const errors: string[] = []
   const warnings: string[] = []
+  const prodRequiredTypes = new Set<FlowEdgeType>(['http_call', 'grpc_call', 'async_publish', 'async_consume'])
 
   for (const finding of args.findings.findings) {
     const confidence = finding.confidence ?? 0.5
@@ -1872,6 +1989,14 @@ function validationFromArtifacts(args: {
 
   for (const edge of args.graph.edges) {
     const prodSeen = edge.lastSeenByEnv.prod
+    const hasAnyRuntimeEvidence = Boolean(edge.lastSeenByEnv.dev || edge.lastSeenByEnv.staging || edge.lastSeenByEnv.prod)
+
+    if (hasAnyRuntimeEvidence && edge.confidence >= 0.7 && prodRequiredTypes.has(edge.type) && !prodSeen) {
+      errors.push(
+        `Missing prod runtime evidence for high-confidence edge ${edge.from} -> ${edge.to} (${edge.type}).`,
+      )
+    }
+
     if (prodSeen) {
       const elapsedMs = now.getTime() - new Date(prodSeen).getTime()
       if (elapsedMs > staleThreshold * 60 * 60 * 1000) {
@@ -2062,6 +2187,7 @@ export function discoverFlow(options: FlowDiscoverOptions): FlowDiscoverResult {
   }
 
   const aliases = serviceAliasMap(config, overrides, scopedRepos)
+  const externalAliases = externalAliasMap(config)
 
   const findings: FlowFinding[] = []
   const ignoredCodes = new Set((config.ignoredFindings ?? []).map((value) => value.trim()))
@@ -2097,13 +2223,18 @@ export function discoverFlow(options: FlowDiscoverOptions): FlowDiscoverResult {
     }
 
     const candidates = listFilesRecursive(repo.localPath)
-      .filter((candidate) => SOURCE_EXTENSIONS.test(candidate))
-      .sort((a, b) => a.localeCompare(b))
+      .map((candidate) => ({
+        absolute: candidate,
+        relative: toRelative(candidate, repo.localPath!),
+      }))
+      .filter((candidate) => shouldScanSourceFile(candidate.relative))
+      .sort((a, b) => a.relative.localeCompare(b.relative))
       .slice(0, 2_000)
 
     for (const candidate of candidates) {
-      const relative = toRelative(candidate, repo.localPath)
-      const content = safeReadText(candidate).slice(0, 200_000)
+      const relative = candidate.relative
+      const rawContent = safeReadText(candidate.absolute).slice(0, 200_000)
+      const content = stripLikelyComments(relative, rawContent)
       if (!content.trim()) {
         continue
       }
@@ -2211,6 +2342,7 @@ export function discoverFlow(options: FlowDiscoverOptions): FlowDiscoverResult {
       repoEnv,
       endpointByMethodPath,
       aliases,
+      externalAliases,
       repos: scopedRepos,
     })
 
@@ -2267,6 +2399,26 @@ export function discoverFlow(options: FlowDiscoverOptions): FlowDiscoverResult {
         confidence: 0.62,
         edgeId: `${callerNode}->${targetNode}`,
         service: call.callerService,
+      })
+      continue
+    }
+
+    if (resolved.targetExternal) {
+      const externalNode = `external:${stableHash(resolved.targetExternal.toLowerCase())}`
+      ensureNode(nodes, {
+        id: externalNode,
+        type: 'external',
+        label: resolved.targetExternal,
+      })
+
+      upsertEdge(edgeAccumulators, {
+        type: call.protocol === 'grpc' ? 'grpc_call' : 'http_call',
+        from: callerNode,
+        to: externalNode,
+        protocol: call.protocol,
+        auth: 'unknown',
+        evidenceRef,
+        source: 'static',
       })
       continue
     }
@@ -2420,6 +2572,12 @@ export function discoverFlow(options: FlowDiscoverOptions): FlowDiscoverResult {
     const urlResolved = runtimeRecord.url
       ? resolveServiceByHost(maybeUrl(runtimeRecord.url.replace(/^grpc:\/\//i, 'http://'))?.host ?? '', aliases, scopedRepos)
       : undefined
+    const peerExternal = !peerResolved && runtimeRecord.peerService
+      ? resolveExternalByHost(runtimeRecord.peerService, externalAliases)
+      : undefined
+    const urlExternal = !urlResolved && runtimeRecord.url
+      ? resolveExternalByHost(maybeUrl(runtimeRecord.url.replace(/^grpc:\/\//i, 'http://'))?.host ?? '', externalAliases)
+      : undefined
 
     let endpoint: EndpointInventoryRecord | undefined
     if (peerResolved) {
@@ -2491,6 +2649,29 @@ export function discoverFlow(options: FlowDiscoverOptions): FlowDiscoverResult {
         evidenceRefs: [runtimeRecord.evidenceRef],
         confidence: runtimeRecord.env === 'prod' ? 0.9 : 0.76,
         service: callerService,
+      })
+      continue
+    }
+
+    const targetExternal = peerExternal ?? urlExternal
+    if (targetExternal) {
+      const externalNode = `external:${stableHash(targetExternal.toLowerCase())}`
+      ensureNode(nodes, {
+        id: externalNode,
+        type: 'external',
+        label: targetExternal,
+      })
+
+      upsertEdge(edgeAccumulators, {
+        type: runtimeRecord.protocol?.toLowerCase().includes('grpc') ? 'grpc_call' : 'http_call',
+        from: callerNode,
+        to: externalNode,
+        protocol: runtimeRecord.protocol?.toLowerCase().includes('grpc') ? 'grpc' : 'http',
+        auth: 'unknown',
+        evidenceRef: runtimeRecord.evidenceRef,
+        source: 'runtime',
+        env: runtimeRecord.env,
+        seenAt: runtimeRecord.timestamp,
       })
       continue
     }
